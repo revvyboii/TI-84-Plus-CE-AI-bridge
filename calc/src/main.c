@@ -14,7 +14,9 @@
  *   ALPHA       cycle input mode  ABC -> abc -> 123
  *   ENTER       send question / go back to typing
  *   DEL         backspace
- *   CLEAR       clear line, cancel, or quit
+ *   CLEAR       clear line, cancel, or back to the menu
+ *   Physics 1 solver: pick a topic, type numbers, LEFT/RIGHT picks what to find,
+ *   ENTER solves. ^ or , types E for powers of ten (3E8).
  *   Y=          new chat (Claude forgets the conversation)
  *   UP/DOWN     scroll the answer (LEFT/RIGHT = page)
  *   In ABC/abc mode: 0 = space, . = period, (-) = ?, 3 = comma, + = '
@@ -70,10 +72,11 @@ static bool bridge_ready = false;
 static uint32_t last_hello = 0;
 
 /* ---------- app state ---------- */
-enum { ST_COMPOSE, ST_WAIT, ST_READ };
+enum { ST_COMPOSE, ST_WAIT, ST_READ, ST_MENU, ST_TOPICS, ST_FORM };
 enum { M_UPPER, M_LOWER, M_NUM };
 
-static uint8_t state = ST_COMPOSE;
+static uint8_t state = ST_MENU;
+static uint8_t home_state = ST_COMPOSE; /* where CLEAR goes back to from an answer */
 static uint8_t mode = M_UPPER;
 static bool dirty = true;
 static bool discard_reply = false; /* drop the answer to a cancelled question */
@@ -236,7 +239,7 @@ static void draw_compose(void) {
     uint8_t shown = 0;
     int y = BODY_Y;
 
-    draw_frame("ENTER send  Y= new chat  CLEAR quit");
+    draw_frame("ENTER send  Y= new chat  CLEAR menu");
 
     gfx_SetTextFGColor(C_DIM);
     gfx_PrintStringXY("Ask Claude:", TEXT_X, y);
@@ -384,29 +387,34 @@ static void start_new_chat(void) {
     dirty = true;
 }
 
-static void send_question(void) {
-    if (input_len == 0) return;
-    if (!srl_open)     { notice = "Plug the USB cable into your laptop"; dirty = true; return; }
-    if (!bridge_ready) { notice = "Bridge not running on laptop";      dirty = true; return; }
+/* Send `wire` to Claude; show `echo` above the answer. */
+static bool send_text(const char *wire, uint16_t wlen, const char *echo, uint16_t elen) {
+    if (wlen == 0) return false;
+    if (!srl_open)     { notice = "Plug the USB cable into your laptop"; dirty = true; return false; }
+    if (!bridge_ready) { notice = "Bridge not running on laptop";      dirty = true; return false; }
 
-    /* echo the question at the top of the answer view */
+    if (elen > 600) elen = 600;
     text[0] = '>';
     text[1] = ' ';
-    memcpy(text + 2, input, input_len);
-    text_len = (uint16_t)(2 + input_len);
+    memcpy(text + 2, echo, elen);
+    text_len = (uint16_t)(2 + elen);
     text[text_len++] = '\n';
     text[text_len++] = '\n';
     reply_offset = text_len;
     wrap_text();
 
-    if (!send_bytes(input, input_len) || !send_bytes("\n", 1)) {
+    if (!send_bytes(wire, wlen) || !send_bytes("\n", 1)) {
         notice = "Send failed - check the cable";
         dirty = true;
-        return;
+        return false;
     }
-    input_len = 0;
     state = ST_WAIT;
     dirty = true;
+    return true;
+}
+
+static void send_question(void) {
+    if (send_text(input, input_len, input, input_len)) input_len = 0;
 }
 
 static void finish_answer(void) {
@@ -455,6 +463,287 @@ static void poll_serial(void) {
 }
 
 /* ================================================================== */
+/* Physics 1 solver (menus + fill-in form)                             */
+/* ================================================================== */
+
+#define MAX_FIELDS 6
+#define MAX_FINDS  6
+#define VAL_LEN    11
+
+typedef struct { const char *label; const char *unit; } field_t;
+typedef struct {
+    const char *name;                 /* menu name */
+    const char *desc;                 /* sent to Claude */
+    uint8_t nfields;
+    field_t fields[MAX_FIELDS];
+    uint8_t nfinds;
+    const char *finds[MAX_FINDS];
+} topic_t;
+
+static const topic_t topics[] = {
+    { "1D motion (const accel)", "1D kinematics with constant acceleration", 5,
+      { {"v0 (initial vel)", "m/s"}, {"v (final vel)", "m/s"}, {"a (accel)", "m/s^2"},
+        {"t (time)", "s"}, {"dx (displacement)", "m"} },
+      5, { "final velocity", "displacement", "time", "acceleration", "initial velocity" } },
+
+    { "Projectile motion", "projectile motion, g = 9.8 m/s^2, no air resistance", 4,
+      { {"v0 (launch speed)", "m/s"}, {"angle above horiz", "deg"}, {"launch height", "m"},
+        {"landing height", "m"} },
+      5, { "max height", "range", "time of flight", "impact speed", "time to top" } },
+
+    { "Incline + friction", "block on an inclined plane with friction, g = 9.8 m/s^2", 5,
+      { {"m (mass)", "kg"}, {"angle of incline", "deg"}, {"mu_k (kinetic)", ""},
+        {"mu_s (static)", ""}, {"F pushing up ramp", "N"} },
+      5, { "acceleration", "normal force", "friction force", "does it slide?", "F to move at const v" } },
+
+    { "Pulley / Atwood", "two masses connected by a string over a massless frictionless pulley; m1 on a table (mu_k given) or hanging if mu_k is blank, m2 hanging", 3,
+      { {"m1", "kg"}, {"m2 (hanging)", "kg"}, {"mu_k (m1 on table)", ""} },
+      2, { "acceleration", "tension" } },
+
+    { "Work & energy", "work-energy / conservation of energy problem, g = 9.8 m/s^2", 6,
+      { {"m (mass)", "kg"}, {"h1 (start height)", "m"}, {"v1 (start speed)", "m/s"},
+        {"h2 (end height)", "m"}, {"k (spring const)", "N/m"}, {"W by friction", "J"} },
+      5, { "final speed", "height reached", "spring compression", "work done", "power needed" } },
+
+    { "Momentum / collisions", "1D collision, positive = right", 4,
+      { {"m1", "kg"}, {"v1 before", "m/s"}, {"m2", "kg"}, {"v2 before", "m/s"} },
+      5, { "v after (stick together)", "v1' and v2' (elastic)", "KE lost", "impulse on m1", "avg force (needs t)" } },
+
+    { "Circular motion", "uniform circular motion, g = 9.8 m/s^2", 4,
+      { {"m (mass)", "kg"}, {"r (radius)", "m"}, {"v (speed)", "m/s"}, {"T (period)", "s"} },
+      5, { "centripetal accel", "net (centripetal) force", "speed", "period", "max speed flat curve (mu)" } },
+
+    { "Torque & rotation", "rotational dynamics / torque problem", 5,
+      { {"F (force)", "N"}, {"r (lever arm)", "m"}, {"angle F to r", "deg"},
+        {"I (moment inertia)", "kg m^2"}, {"t (time)", "s"} },
+      4, { "torque", "angular accel", "angular velocity", "rotational KE" } },
+};
+#define NUM_TOPICS (sizeof topics / sizeof topics[0])
+
+static const char *main_items[] = { "Physics 1 solver", "Ask Claude anything", "Quit" };
+
+static uint8_t menu_sel = 0;
+static uint8_t topic_sel = 0;
+static uint8_t form_row = 0;     /* 0..nfields-1 = values, nfields = Find row */
+static uint8_t find_sel = 0;
+static char vals[MAX_FIELDS][VAL_LEN + 1];
+static uint8_t val_len[MAX_FIELDS];
+static char wire[700];
+
+static void draw_list(const char *heading, const char *const *items, uint8_t count,
+                      uint8_t sel, const char *footer) {
+    draw_frame(footer);
+    gfx_SetTextFGColor(C_DIM);
+    gfx_PrintStringXY(heading, TEXT_X, BODY_Y);
+    for (uint8_t i = 0; i < count; i++) {
+        int y = BODY_Y + 16 + i * 20;
+        char num[4] = { (char)('1' + i), ')', ' ', 0 };
+        if (i == sel) {
+            gfx_SetColor(C_ACCENT);
+            gfx_FillRectangle_NoClip(TEXT_X - 2, (uint8_t)(y - 5), SCREEN_W - 2 * TEXT_X + 4, 18);
+            gfx_SetTextFGColor(C_WHITE);
+        } else {
+            gfx_SetTextFGColor(C_TEXT);
+        }
+        gfx_PrintStringXY(num, TEXT_X + 4, y);
+        gfx_PrintString(items[i]);
+    }
+}
+
+static void draw_menu(void) {
+    draw_list("Claude for TI-84", main_items, 3, menu_sel, "arrows + ENTER, or press 1-3");
+}
+
+static void draw_topics(void) {
+    static const char *names[NUM_TOPICS];
+    for (uint8_t i = 0; i < NUM_TOPICS; i++) names[i] = topics[i].name;
+    draw_list("Physics 1 - pick a topic", names, NUM_TOPICS, topic_sel, "ENTER pick  CLEAR back");
+}
+
+static void draw_form(void) {
+    const topic_t *tp = &topics[topic_sel];
+    int y = BODY_Y;
+
+    draw_frame("type numbers  ENTER solve  CLEAR back");
+    gfx_SetTextFGColor(C_ACCENT);
+    gfx_PrintStringXY(tp->name, TEXT_X, y);
+    gfx_SetTextFGColor(C_DIM);
+    gfx_PrintStringXY("leave unknowns blank", TEXT_X, y + 10);
+    y += 26;
+
+    for (uint8_t i = 0; i <= tp->nfields; i++) {
+        bool on = (i == form_row);
+        if (on) {
+            gfx_SetColor(C_RULE);
+            gfx_FillRectangle_NoClip(TEXT_X - 2, (uint8_t)(y - 3), SCREEN_W - 2 * TEXT_X + 4, 14);
+        }
+        if (i < tp->nfields) {
+            gfx_SetTextFGColor(C_TEXT);
+            gfx_PrintStringXY(tp->fields[i].label, TEXT_X, y);
+            gfx_SetTextFGColor(on ? C_ACCENT : C_TEXT);
+            char shown[VAL_LEN + 2];
+            memcpy(shown, vals[i], val_len[i]);
+            uint8_t n = val_len[i];
+            if (on) shown[n++] = '_';
+            else if (n == 0) shown[n++] = '-';
+            shown[n] = 0;
+            gfx_PrintStringXY(shown, 168, y);
+            gfx_SetTextFGColor(C_DIM);
+            gfx_PrintStringXY(tp->fields[i].unit, 270, y);
+        } else {
+            y += 6;
+            if (on) {
+                gfx_SetColor(C_RULE);
+                gfx_FillRectangle_NoClip(TEXT_X - 2, (uint8_t)(y - 3), SCREEN_W - 2 * TEXT_X + 4, 14);
+            }
+            gfx_SetTextFGColor(C_ACCENT);
+            gfx_PrintStringXY("FIND: < ", TEXT_X, y);
+            gfx_PrintString(tp->finds[find_sel]);
+            gfx_PrintString(" >");
+        }
+        y += 16;
+    }
+    gfx_SetTextFGColor(C_DIM);
+    gfx_PrintStringXY("up/down: field  left/right: what to find", TEXT_X, y + 4);
+}
+
+static void open_topic(uint8_t t) {
+    topic_sel = t;
+    form_row = 0;
+    find_sel = 0;
+    memset(val_len, 0, sizeof val_len);
+    state = ST_FORM;
+    dirty = true;
+}
+
+static void append(char *buf, uint16_t *len, uint16_t cap, const char *s) {
+    while (*s && *len < cap - 1) buf[(*len)++] = *s++;
+}
+
+static void solve_form(void) {
+    const topic_t *tp = &topics[topic_sel];
+    char echo[200];
+    uint16_t w = 0, e = 0;
+    bool any = false;
+
+    append(wire, &w, sizeof wire, "Physics 1 problem (Young & Freedman, SI units): ");
+    append(wire, &w, sizeof wire, tp->desc);
+    append(wire, &w, sizeof wire, ". Given: ");
+    append(echo, &e, sizeof echo, tp->name);
+    append(echo, &e, sizeof echo, ": ");
+
+    for (uint8_t i = 0; i < tp->nfields; i++) {
+        if (val_len[i] == 0) continue;
+        char v[VAL_LEN + 1];
+        memcpy(v, vals[i], val_len[i]);
+        v[val_len[i]] = 0;
+        if (any) { append(wire, &w, sizeof wire, ", "); append(echo, &e, sizeof echo, ", "); }
+        append(wire, &w, sizeof wire, tp->fields[i].label);
+        append(wire, &w, sizeof wire, " = ");
+        append(wire, &w, sizeof wire, v);
+        append(wire, &w, sizeof wire, " ");
+        append(wire, &w, sizeof wire, tp->fields[i].unit);
+        /* short echo: label up to the first space, e.g. "v0=20" */
+        for (const char *p = tp->fields[i].label; *p && *p != ' ' && e < sizeof echo - 1; p++)
+            echo[e++] = *p;
+        append(echo, &e, sizeof echo, "=");
+        append(echo, &e, sizeof echo, v);
+        any = true;
+    }
+    if (!any) { notice = "Enter at least one number"; dirty = true; return; }
+
+    append(wire, &w, sizeof wire, ". Find: ");
+    append(wire, &w, sizeof wire, tp->finds[find_sel]);
+    append(wire, &w, sizeof wire, ". Answer format, one short line each: EQN: the equation(s) used. "
+           "SUB: numbers plugged in. ANS: result with units and 3 sig figs. "
+           "If something needed is missing, say what. Max 8 lines.");
+    append(echo, &e, sizeof echo, " | find ");
+    append(echo, &e, sizeof echo, tp->finds[find_sel]);
+
+    home_state = ST_FORM;
+    if (srl_open && bridge_ready) {
+        static const char fresh[2] = { NEW_CHAT, '\n' };  /* each problem starts a fresh chat */
+        send_bytes(fresh, 2);
+    }
+    send_text(wire, w, echo, e);
+}
+
+static void form_keys(void) {
+    const topic_t *tp = &topics[topic_sel];
+
+    if (pressed_repeat(kb_KeyDown)) {
+        if (form_row < tp->nfields) form_row++;
+        dirty = true;
+    } else if (pressed_repeat(kb_KeyUp)) {
+        if (form_row > 0) form_row--;
+        dirty = true;
+    } else if (PRESSED(kb_KeyRight)) {
+        find_sel = (uint8_t)((find_sel + 1) % tp->nfinds);
+        dirty = true;
+    } else if (PRESSED(kb_KeyLeft)) {
+        find_sel = (uint8_t)((find_sel + tp->nfinds - 1) % tp->nfinds);
+        dirty = true;
+    } else if (PRESSED(kb_KeyEnter)) {
+        solve_form();
+    } else if (PRESSED(kb_KeyClear)) {
+        if (form_row < tp->nfields && val_len[form_row] > 0) val_len[form_row] = 0;
+        else state = ST_TOPICS;
+        dirty = true;
+    } else if (form_row < tp->nfields) {
+        uint8_t r = form_row;
+        char c = 0;
+        if (pressed_repeat(kb_KeyDel)) {
+            if (val_len[r] > 0) { val_len[r]--; dirty = true; }
+            return;
+        }
+        if      (PRESSED(kb_Key0)) c = '0';
+        else if (PRESSED(kb_Key1)) c = '1';
+        else if (PRESSED(kb_Key2)) c = '2';
+        else if (PRESSED(kb_Key3)) c = '3';
+        else if (PRESSED(kb_Key4)) c = '4';
+        else if (PRESSED(kb_Key5)) c = '5';
+        else if (PRESSED(kb_Key6)) c = '6';
+        else if (PRESSED(kb_Key7)) c = '7';
+        else if (PRESSED(kb_Key8)) c = '8';
+        else if (PRESSED(kb_Key9)) c = '9';
+        else if (PRESSED(kb_KeyDecPnt)) c = '.';
+        else if (PRESSED(kb_KeyChs) || PRESSED(kb_KeySub)) c = '-';
+        else if (PRESSED(kb_KeyPower) || PRESSED(kb_KeyComma)) c = 'E'; /* 3E8 = 3x10^8 */
+        if (c && val_len[r] < VAL_LEN) {
+            vals[r][val_len[r]++] = c;
+            dirty = true;
+        }
+    }
+}
+
+/* returns true if the user chose Quit */
+static bool menu_keys(void) {
+    int8_t pick = -1;
+    if (PRESSED(kb_KeyDown)) { menu_sel = (uint8_t)((menu_sel + 1) % 3); dirty = true; }
+    if (PRESSED(kb_KeyUp))   { menu_sel = (uint8_t)((menu_sel + 2) % 3); dirty = true; }
+    if (PRESSED(kb_KeyEnter)) pick = (int8_t)menu_sel;
+    if (PRESSED(kb_Key1)) pick = 0;
+    if (PRESSED(kb_Key2)) pick = 1;
+    if (PRESSED(kb_Key3) || PRESSED(kb_KeyClear)) pick = 2;
+    if (pick == 0) { state = ST_TOPICS; dirty = true; }
+    if (pick == 1) { home_state = ST_COMPOSE; state = ST_COMPOSE; dirty = true; }
+    return pick == 2;
+}
+
+static void topics_keys(void) {
+    static const kb_lkey_t num_keys[] = { kb_Key1, kb_Key2, kb_Key3, kb_Key4,
+                                          kb_Key5, kb_Key6, kb_Key7, kb_Key8 };
+    if (pressed_repeat(kb_KeyDown)) { topic_sel = (uint8_t)((topic_sel + 1) % NUM_TOPICS); dirty = true; }
+    else if (pressed_repeat(kb_KeyUp)) { topic_sel = (uint8_t)((topic_sel + NUM_TOPICS - 1) % NUM_TOPICS); dirty = true; }
+    else if (PRESSED(kb_KeyEnter)) open_topic(topic_sel);
+    else if (PRESSED(kb_KeyClear)) { state = ST_MENU; dirty = true; }
+    else {
+        for (uint8_t i = 0; i < NUM_TOPICS && i < 8; i++)
+            if (PRESSED(num_keys[i])) { open_topic(i); break; }
+    }
+}
+
+/* ================================================================== */
 /* Main                                                                */
 /* ================================================================== */
 
@@ -492,7 +781,8 @@ int main(void) {
         for (uint8_t g = 1; g < 8; g++)
             if (new_keys[g] && notice) { notice = NULL; dirty = true; break; }
 
-        if (PRESSED(kb_KeyYequ)) start_new_chat();
+        if (PRESSED(kb_KeyYequ) && (state == ST_COMPOSE || state == ST_READ || state == ST_WAIT))
+            start_new_chat();
 
         switch (state) {
         case ST_COMPOSE: {
@@ -506,7 +796,7 @@ int main(void) {
                 if (input_len > 0) { input_len--; dirty = true; }
             } else if (PRESSED(kb_KeyClear)) {
                 if (input_len > 0) { input_len = 0; dirty = true; }
-                else quit = true;
+                else { state = ST_MENU; dirty = true; }
             } else if (PRESSED(kb_KeyUp) && have_answer) {
                 state = ST_READ;
                 dirty = true;
@@ -523,7 +813,7 @@ int main(void) {
                 text_len = 0;
                 line_count = 0;
                 have_answer = false;
-                state = ST_COMPOSE;
+                state = home_state;
                 notice = "Cancelled";
                 dirty = true;
             } else if (now() - last_anim > MS(350)) {
@@ -545,8 +835,11 @@ int main(void) {
             } else if (PRESSED(kb_KeyLeft)) {
                 scroll = scroll > BODY_LINES - 1 ? (uint16_t)(scroll - (BODY_LINES - 1)) : 0;
                 dirty = true;
-            } else if (PRESSED(kb_KeyEnter) || PRESSED(kb_KeyClear)) {
-                state = ST_COMPOSE;
+            } else if (PRESSED(kb_KeyEnter)) {
+                state = ST_COMPOSE;            /* type a follow-up */
+                dirty = true;
+            } else if (PRESSED(kb_KeyClear)) {
+                state = home_state;            /* back to the form or typing */
                 dirty = true;
             } else if (PRESSED(kb_KeyAlpha)) {
                 mode = (uint8_t)((mode + 1) % 3);
@@ -560,13 +853,28 @@ int main(void) {
             }
             break;
         }
+
+        case ST_MENU:
+            if (menu_keys()) quit = true;
+            break;
+
+        case ST_TOPICS:
+            topics_keys();
+            break;
+
+        case ST_FORM:
+            form_keys();
+            break;
         }
 
         if (dirty) {
             dirty = false;
-            if (state == ST_COMPOSE)   draw_compose();
-            else if (state == ST_WAIT) draw_wait(dots);
-            else                       draw_read();
+            if (state == ST_COMPOSE)      draw_compose();
+            else if (state == ST_WAIT)    draw_wait(dots);
+            else if (state == ST_MENU)    draw_menu();
+            else if (state == ST_TOPICS)  draw_topics();
+            else if (state == ST_FORM)    draw_form();
+            else                          draw_read();
             gfx_SwapDraw();
         }
     }
