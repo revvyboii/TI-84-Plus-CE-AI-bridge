@@ -16,16 +16,28 @@ jobs:
           curl -fsSL https://github.com/CE-Programming/toolchain/releases/latest/download/CEdev-Linux.tar.gz | tar -xz -C "$HOME/cedev"
           echo "$(dirname "$(find "$HOME/cedev" -name cedev-config -type f | head -n 1)")" >> "$GITHUB_PATH"
 
-      - name: Build CLAUDE.8xp
-        run: make -C calc
+      - name: Build CLAUDE (chat with Claude)
+        run: |
+          mkdir -p out
+          make -C calc
+          cp calc/bin/CLAUDE.8xp out/
+
+      - name: Build PHYS1 (physics solver + Ask AI)
+        run: |
+          make -C phys1 NAME=PHYS1 AI=1
+          cp phys1/bin/PHYS1.8xp out/
+          make -C phys1 NAME=PHYS1 clean
+
+      - name: Build PHYSL (physics solver only, no USB)
+        run: |
+          make -C phys1 NAME=PHYSL AI=0
+          cp phys1/bin/PHYSL.8xp out/
 
       - name: Get the CE libraries (clibs.8xg)
         continue-on-error: true
-        run: curl -fsSL -o calc/bin/clibs.8xg https://github.com/CE-Programming/libraries/releases/latest/download/clibs.8xg
+        run: curl -fsSL -o out/clibs.8xg https://github.com/CE-Programming/libraries/releases/latest/download/clibs.8xg
 
       - uses: actions/upload-artifact@v4
         with:
           name: send-these-to-your-calculator
-          path: |
-            calc/bin/CLAUDE.8xp
-            calc/bin/clibs.8xg
+          path: out/
