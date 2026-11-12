@@ -22,16 +22,17 @@ jobs:
           make -C calc
           cp calc/bin/CLAUDE.8xp out/
 
-      - name: Build PHYS1 (physics solver + Ask AI)
+      - name: Build PHYS1, PHYS2, PHYS3 (solver + Ask AI) and PHL1, PHL2, PHL3 (solver only)
         run: |
-          make -C phys1 NAME=PHYS1 AI=1
-          cp phys1/bin/PHYS1.8xp out/
-          make -C phys1 NAME=PHYS1 clean
-
-      - name: Build PHYSL (physics solver only, no USB)
-        run: |
-          make -C phys1 NAME=PHYSL AI=0
-          cp phys1/bin/PHYSL.8xp out/
+          for part in 1 2 3; do
+            make -C phys1 NAME=PHYS$part PART=$part AI=1
+            cp phys1/bin/PHYS$part.8xp out/
+            make -C phys1 NAME=PHYS$part clean
+            make -C phys1 NAME=PHL$part PART=$part AI=0
+            cp phys1/bin/PHL$part.8xp out/
+            make -C phys1 NAME=PHL$part clean
+          done
+          ls -l out
 
       - name: Get the CE libraries (clibs.8xg)
         continue-on-error: true
