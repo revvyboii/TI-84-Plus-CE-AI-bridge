@@ -577,6 +577,10 @@ FN(el_r1,  v[3] + v[5] - v[4])
 FN(el_r2,  v[1] - v[5] + v[4])
 FN(el_dp1, v[0] * (v[4] - v[1]))
 FN(el_dk1, 0.5 * v[0] * (SQ(v[4]) - SQ(v[1])))
+FN(g_v1,  (v[0] * v[4] + v[2] * v[5] - v[2] * v[3]) / v[0])
+FN(g_v2,  (v[0] * v[4] + v[2] * v[5] - v[0] * v[1]) / v[2])
+FN(g_v1f, (v[0] * v[1] + v[2] * v[3] - v[2] * v[5]) / v[0])
+FN(g_v2f, (v[0] * v[1] + v[2] * v[3] - v[0] * v[4]) / v[2])
 FN(g_m1,   v[2] * (v[5] - v[3]) / (v[1] - v[4]))
 FN(g_m2,   v[0] * (v[1] - v[4]) / (v[5] - v[3]))
 static const var_t elas_vars[] = {
@@ -591,23 +595,28 @@ static const var_t elas_vars[] = {
 };
 #define G_EQ "m1 v1 + m2 v2 = m1 v1f + m2 v2f"
 #define EL_REL "v1 - v2 = v2f - v1f (elastic)"
+/* Momentum always holds, so it comes first: with 5 of the 6 known, the 6th
+   comes from momentum alone. The elastic-only shortcuts are fallbacks for
+   when momentum cannot do it by itself. They are R_NOCHK so a collision that
+   turns out not to be elastic is not called a "conflict"; the kinetic-energy
+   check in situation_note() says so instead. */
 static const rule_t elas_rules[] = {
-    {4, B(0)|B(1)|B(2)|B(3), el_v1f, "v1f = ((m1-m2) v1 + 2 m2 v2)/(m1+m2)", 0},
-    {5, B(0)|B(1)|B(2)|B(3), el_v2f, "v2f = (2 m1 v1 + (m2-m1) v2)/(m1+m2)", 0},
-    {5, B(1)|B(3)|B(4), el_r2f, EL_REL, 0},
-    {4, B(1)|B(3)|B(5), el_r1f, EL_REL, 0},
-    {1, B(3)|B(4)|B(5), el_r1, EL_REL, 0},
-    {3, B(1)|B(4)|B(5), el_r2, EL_REL, 0},
+    {5, B(0)|B(1)|B(2)|B(3)|B(4), g_v2f, G_EQ, 0},
+    {4, B(0)|B(1)|B(2)|B(3)|B(5), g_v1f, G_EQ, 0},
+    {1, B(0)|B(2)|B(3)|B(4)|B(5), g_v1, G_EQ, 0},
+    {3, B(0)|B(1)|B(2)|B(4)|B(5), g_v2, G_EQ, 0},
     {0, B(1)|B(2)|B(3)|B(4)|B(5), g_m1, G_EQ, 0},
     {2, B(0)|B(1)|B(3)|B(4)|B(5), g_m2, G_EQ, 0},
+    {4, B(0)|B(1)|B(2)|B(3), el_v1f, "v1f = ((m1-m2) v1 + 2 m2 v2)/(m1+m2)", R_NOCHK},
+    {5, B(0)|B(1)|B(2)|B(3), el_v2f, "v2f = (2 m1 v1 + (m2-m1) v2)/(m1+m2)", R_NOCHK},
+    {5, B(1)|B(3)|B(4), el_r2f, EL_REL, R_NOCHK},
+    {4, B(1)|B(3)|B(5), el_r1f, EL_REL, R_NOCHK},
+    {1, B(3)|B(4)|B(5), el_r1, EL_REL, R_NOCHK},
+    {3, B(1)|B(4)|B(5), el_r2, EL_REL, R_NOCHK},
     {6, B(0)|B(1)|B(4), el_dp1, "dp1 = m1 (v1f - v1)", 0},
     {7, B(0)|B(1)|B(4), el_dk1, "dK1 = (1/2) m1 (v1f^2 - v1^2)", 0},
 };
 /* any collision / recoil / explosion: one equation, six slots */
-FN(g_v1,  (v[0] * v[4] + v[2] * v[5] - v[2] * v[3]) / v[0])
-FN(g_v2,  (v[0] * v[4] + v[2] * v[5] - v[0] * v[1]) / v[2])
-FN(g_v1f, (v[0] * v[1] + v[2] * v[3] - v[2] * v[5]) / v[0])
-FN(g_v2f, (v[0] * v[1] + v[2] * v[3] - v[0] * v[4]) / v[2])
 static const var_t gen_vars[] = {
     {"m1",  "kg",  "m1: first object", UNK},
     {"v1",  "m/s", "v1: before (at rest: 0, left = -)", UNK},
@@ -2484,7 +2493,16 @@ static const char *situation_note(void) {
 #if PART == 0 || PART == 2
     if (tp->vars == stick_vars) {
         if (KN(5) && val[5] > 1e-6) return "dK > 0 cannot happen: check signs";
-    } else if (tp->vars == gen_vars) {
+    } else if (tp->vars == elas_vars) {
+        /* all six known: compare kinetic energy before and after */
+        if (KN(0) && KN(1) && KN(2) && KN(3) && KN(4) && KN(5)) {
+            double kb = 0.5 * val[0] * SQ(val[1]) + 0.5 * val[2] * SQ(val[3]);
+            double ka = 0.5 * val[0] * SQ(val[4]) + 0.5 * val[2] * SQ(val[5]);
+            double tol = 0.02 * kb + 1e-6;   /* givens rounded to ~3 figures */
+            if (ka < kb - tol) return "KE lost: NOT elastic (momentum used)";
+            if (ka > kb + tol) return "KE went up: check signs";
+            return "KE conserved: elastic, checks out";
+        }
         if (KN(6)) return val[6] > 1e-6 ? "KE went up: push-off or explosion"
                         : val[6] < -1e-6 ? "KE was lost: not an elastic collision" : "KE unchanged: elastic";
     } else if (tp->vars == col2_vars) {
@@ -2564,6 +2582,13 @@ static void check(const char *topic, const char *spec) {
         if (!good) { fails++; printf("FAIL %-26s %s: got %g (state %d) want %g   [%s]\n", topic, tok, val[i], st[i], want, spec); }
     }
     if (conflict >= 0) { fails++; printf("CONFLICT %-22s %s   [%s]\n", topic, tp->rules[conflict].eq, spec); }
+}
+/* the remark shown under the answers */
+static void note_is(const char *topic, const char *spec, const char *want) {
+    char buf[300]; snprintf(buf, sizeof buf, "%s |", spec);
+    check(topic, buf);
+    const char *got = situation_note();
+    if (!got || strcmp(got, want)) { fails++; printf("NOTE %-26s got '%s' want '%s'   [%s]\n", topic, got ? got : "(none)", want, spec); }
 }
 /* every rule of a topic must agree once everything is known */
 static void full(const char *topic, const char *spec) {
@@ -2694,6 +2719,12 @@ int main(int argc, char **argv) {
     check("Collision: stick together", "m1=0.005 m2=2 v2=0 vf=1.5 | v1=601.5");             /* bullet in block */
     check("Collision: elastic", "m1=2 v1=3 m2=1 v2=0 | v1f=1 v2f=4");
     check("Collision: elastic", "m1=1 v1=4 m2=1 v2=-2 | v1f=-2 v2f=4");
+    /* not actually elastic: v1f is given, so v2f must come from momentum */
+    check("Collision: elastic", "m1=2 v1=5 m2=3 v2=-1 v1f=-0.5 | v2f=2.6667");
+    check("Collision: elastic", "m1=2 v1=5 m2=3 v2=-1 v2f=2.6667 | v1f=-0.5");
+    check("Collision: elastic", "m1=0.2 v1=10 m2=0.3 v2=0 v1f=-2 | v2f=8");   /* truly elastic */
+    note_is("Collision: elastic", "m1=2 v1=5 m2=3 v2=-1 v1f=-0.5", "KE lost: NOT elastic (momentum used)");
+    note_is("Collision: elastic", "m1=0.2 v1=10 m2=0.3 v2=0 v1f=-2", "KE conserved: elastic, checks out");
     check("Recoil / any collision", "m1=4 v1=0 m2=0.01 v2=0 v2f=300 | v1f=-0.75");          /* rifle recoil */
     check("Recoil / any collision", "m1=0.2 v1=10 m2=0.3 v2=0 v1f=-2 | v2f=8");
     check("Impulse", "m=0.145 v1=-40 v2=50 t=0.002 | J=13.05 F=6525");
