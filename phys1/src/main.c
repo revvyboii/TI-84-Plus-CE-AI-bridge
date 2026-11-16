@@ -2125,6 +2125,122 @@ static uint8_t cat_first(uint8_t c) {
     return f;
 }
 
+/* ---------- "Help me pick": a few easy questions lead to the right screen ----------
+   Each answer either asks another question (next) or names a problem type.
+   prog/cat/num say where that type lives (PHYSprog, home key cat, then key num),
+   so a type that is in another program can say exactly which keys to press.
+   The PC tests check every one of these against the real menus. */
+typedef struct {
+    const char *label;  /* at most 32 characters (fits the screen) */
+    uint8_t next;       /* question to ask next, or 0 = this is the answer */
+    uint8_t prog, cat, num;
+    const char *topic;
+} qopt_t;
+typedef struct { const char *ask; uint8_t first, count; } qnode_t;
+#define QA(label, node)             { label, node, 0, 0, 0, NULL }
+#define QT(label, p, c, n, topic)   { label, 0, p, c, n, topic }
+static const char *const all_cat_names[9] = {
+    "Motion", "Forces", "Energy", "Momentum", "Momentum in 2-D", "Changing force (calc)",
+    "Rotation", "Gravity + springs", "Fluids + solids" };
+static const qopt_t qopts[] = {
+    /* 0: start (8) */
+    QA("Moves, falls, or flies", 1),
+    QA("Push, pull, rope, ramp, friction", 2),
+    QA("Height, speed, spring, energy", 3),
+    QA("Crash, stick, bounce, recoil", 4),
+    QA("Spins, rolls, or twists", 5),
+    QA("Planet, orbit, pendulum, bobbing", 6),
+    QA("Water, air, float, pressure", 7),
+    QA("Units, or adding arrows", 8),
+    /* 1: motion (6) */
+    QT("Straight line: speeds up/brakes", 1, 1, 1, "Straight-line motion"),
+    QT("Dropped, or thrown straight up", 1, 1, 1, "Straight-line motion"),
+    QT("Thrown or launched at an angle", 1, 1, 2, "Projectile"),
+    QT("Rolls off a table or cliff", 1, 1, 2, "Projectile"),
+    QT("Goes in a circle / takes a curve", 1, 1, 3, "Circular motion"),
+    QT("Loop, top of a hill, banked road", 1, 1, 4, "Vertical circle + banked"),
+    /* 2: forces (9) */
+    QT("Pushed or pulled on flat ground", 1, 2, 1, "F = ma + friction"),
+    QT("Pulled by a rope at an angle", 1, 2, 2, "Pull at an angle"),
+    QT("Slides on a ramp by itself", 1, 2, 3, "Incline (ramp)"),
+    QT("Pushed on a ramp", 1, 2, 4, "Incline + push"),
+    QT("Two weights over a pulley", 1, 2, 5, "Atwood (2 hanging)"),
+    QT("Block on table, weight hangs off", 1, 2, 6, "Table + hanging mass"),
+    QT("Elevator, or scale reading", 1, 2, 7, "Elevator (apparent wt)"),
+    QT("Hangs from two ropes", 1, 2, 8, "Hanging from 2 ropes"),
+    QT("Spring stretched by a force", 1, 3, 4, "Spring (Hooke's law)"),
+    /* 3: energy (7) */
+    QT("Goes up or down some height", 1, 3, 3, "Energy conservation"),
+    QT("Slides down, friction eats some", 1, 3, 3, "Energy conservation"),
+    QT("Spring launches it or stops it", 1, 3, 3, "Energy conservation"),
+    QT("Work: force times distance", 1, 3, 1, "Work and power"),
+    QT("Power: how fast (watts)", 1, 3, 1, "Work and power"),
+    QT("Work changes its speed", 1, 3, 2, "Work-energy theorem"),
+    QT("Spring: k, stretch, force", 1, 3, 4, "Spring (Hooke's law)"),
+    /* 4: collisions (9) */
+    QT("They stick together", 2, 1, 1, "Collision: stick together"),
+    QT("Bounce, NO energy lost (elastic)", 2, 1, 2, "Collision: elastic"),
+    QT("Bounce, I know 1 speed after", 2, 1, 3, "Recoil / any collision"),
+    QT("Start still, then push apart", 2, 1, 3, "Recoil / any collision"),
+    QT("Hit hard for a short time", 2, 1, 4, "Impulse"),
+    QT("Stick, then slide/swing/spring", 2, 1, 6, "Stick, then what happens"),
+    QA("At angles, not a straight line", 9),
+    QT("Just p = mv or KE of one thing", 2, 1, 5, "Momentum and KE"),
+    QA("Rocket, center of mass, more", 10),
+    /* 5: rotation (8) */
+    QT("Spins faster or slower", 3, 1, 1, "Rotational motion"),
+    QT("Spin rate <-> edge speed", 3, 1, 2, "Linear <-> angular"),
+    QT("A force turns it (torque)", 3, 1, 3, "Torque and rotation"),
+    QT("I of a disk, hoop, rod, ball", 3, 1, 4, "Moment of inertia"),
+    QT("I about a different axis", 3, 1, 5, "Parallel-axis theorem"),
+    QT("Rolls down a ramp or hill", 3, 1, 6, "Rolling"),
+    QT("Pulls arms in, spins faster", 3, 1, 7, "Angular momentum"),
+    QT("Seesaw or lever balances", 3, 1, 8, "Lever balance"),
+    /* 6: gravity + oscillation (5) */
+    QT("Gravity pull between two things", 3, 2, 1, "Gravitation"),
+    QT("Orbit, or escape speed", 3, 2, 1, "Gravitation"),
+    QT("Mass bobs on a spring", 3, 2, 2, "Springs and pendulums"),
+    QT("Pendulum on a string", 3, 2, 2, "Springs and pendulums"),
+    QT("A solid object swings", 3, 2, 3, "Physical pendulum"),
+    /* 7: fluids + solids (4) */
+    QT("Density, or pressure underwater", 3, 3, 1, "Density + pressure"),
+    QT("Floats or sinks", 3, 3, 2, "Buoyancy"),
+    QT("Flows through a pipe", 3, 3, 3, "Flow (Bernoulli)"),
+    QT("Wire or rod stretches", 3, 3, 4, "Stress and strain"),
+    /* 8: units + vectors (3) */
+    QT("Change units: km/h, rpm, ft...", 1, 1, 7, "Convert units"),
+    QT("Split an arrow into x and y", 1, 1, 5, "Vector components"),
+    QT("Add two arrows together", 1, 1, 6, "Add two vectors"),
+    /* 9: 2-D collisions (3) */
+    QT("Stick together at an angle", 2, 2, 3, "Stick together in 2-D"),
+    QT("Bounce off at angles", 2, 2, 2, "Collision in 2-D"),
+    QT("Kicked or hit at an angle", 2, 2, 1, "Impulse in 2-D"),
+    /* 10: more momentum (5) */
+    QT("Spring pushes 2 blocks apart", 2, 1, 7, "Spring between 2 blocks"),
+    QT("Center of mass / balance point", 2, 1, 8, "Center of mass"),
+    QT("Rocket burns fuel", 2, 1, 9, "Rocket thrust"),
+    QT("Force changes with time: A t^n", 2, 3, 1, "Force F = A t^n"),
+    QT("Rate of change (d/dt)", 2, 3, 2, "Rate of change (d/dt)"),
+};
+static const qnode_t qnodes[] = {
+    {"What is going on?", 0, 8},
+    {"How does it move?", 8, 6},
+    {"What is it doing?", 14, 9},
+    {"What happens?", 23, 7},
+    {"What do the objects do?", 30, 9},
+    {"What is spinning doing?", 39, 8},
+    {"Which one?", 47, 5},
+    {"Which one?", 52, 4},
+    {"Which one?", 56, 3},
+    {"Which one?", 59, 3},
+    {"Which one?", 62, 5},
+};
+/* a problem type in this program, or -1 */
+static int16_t local_topic(const char *name) {
+    for (uint8_t t = 0; t < NUM_TOPICS; t++) if (!strcmp(topics[t].name, name)) return t;
+    return -1;
+}
+
 /* ---------- form state + solver ------------------------------------ */
 enum { S_UNK, S_USER, S_SOLVED, S_DEF };
 #ifdef HOST_TEST
@@ -2656,6 +2772,26 @@ int main(int argc, char **argv) {
     }
     if (fabs(parse_num("-2.5E-3") + 0.0025) > 1e-12 || parse_num("3E8") != 3e8 || ok(parse_num("-")) || ok(parse_num("1E")) || parse_num(".5") != 0.5) { fails++; printf("PARSE fail\n"); }
 
+
+    /* "Help me pick": every answer must point at a real screen, at the right keys */
+    for (unsigned n = 0; n < N(qnodes); n++) {
+        const qnode_t *q = &qnodes[n];
+        if (q->count < 1 || q->count > 9 || q->first + q->count > N(qopts) || strlen(q->ask) > 32) { fails++; printf("QUIZ node %u bad\n", n); }
+        for (unsigned i = q->first; i < q->first + q->count; i++) {
+            const qopt_t *o = &qopts[i];
+            if (strlen(o->label) > 32) { fails++; printf("QUIZ label too long: %s\n", o->label); }
+            if (o->next) { if (o->next >= N(qnodes)) { fails++; printf("QUIZ bad next: %s\n", o->label); } continue; }
+            int t = local_topic(o->topic);
+            if (t < 0) { fails++; printf("QUIZ no topic: %s\n", o->topic); continue; }
+            unsigned c = 0; while (cat_first((uint8_t)(c + 1)) <= t && c + 1 < NUM_CATS) c++;
+            unsigned want_p = c / 3 + 1, want_c = c % 3 + 1, want_n = (unsigned)t - cat_first((uint8_t)c) + 1;
+            if (o->prog != want_p || o->cat != want_c || o->num != want_n || strcmp(all_cat_names[c], cats[c].name))
+                { fails++; printf("QUIZ keys wrong for %s: have %u/%u/%u want %u/%u/%u\n", o->topic, o->prog, o->cat, o->num, want_p, want_c, want_n); }
+        }
+    }
+    { bool seen[64] = {0}; /* every problem type is reachable from the quiz */
+      for (unsigned i = 0; i < N(qopts); i++) if (!qopts[i].next) seen[local_topic(qopts[i].topic)] = true;
+      for (unsigned t = 0; t < NUM_TOPICS; t++) if (!seen[t]) printf("(quiz does not reach: %s)\n", topics[t].name); }
     /* every rule consistent (all variables known) */
     full("Straight-line motion", "v0=3 a=2 t=4");
     full("Rotational motion", "w0=1.5 alpha=0.8 t=6");
@@ -2869,14 +3005,16 @@ static bool night = false;
 static void apply_theme(void) { gfx_SetPalette(night ? pal_night : pal_paper, sizeof pal_paper, 0); }
 
 /* ---------- app state ---------------------------------------------- */
-enum { ST_HOME, ST_TOPICS, ST_FORM, ST_READ, ST_WAIT, ST_COMPOSE };
+enum { ST_HOME, ST_TOPICS, ST_FORM, ST_READ, ST_WAIT, ST_COMPOSE, ST_QUIZ };
 static uint8_t state = ST_HOME, read_back = ST_FORM;
 static bool dirty = true;
 static const char *notice = NULL;
 static const char *read_title = "";
 static bool read_is_ai = false;
 
-static uint8_t home_sel, topic_sel, cur_cat, cur_topic, row, row_top;
+static uint8_t quiz_node, quiz_sel, quiz_stack[4], quiz_depth;
+#define HOME_ITEMS (NUM_CATS + 1)   /* the categories, then "Help me pick" */
+static uint8_t home_sel = NUM_CATS, topic_sel, cur_cat, cur_topic, row, row_top;
 static bool pending;            /* typed something; re-solve once the keys go quiet */
 static uint32_t solve_at;
 
@@ -3033,13 +3171,21 @@ static void draw_list(const char *title, const char *heading, const char *const 
 
 static void draw_home(void) {
 #if USE_CLAUDE
-    static const char *const soft[5] = { "Formula", "Ask AI", "", "Theme", "Quit" };
+    static const char *const soft[5] = { "Formula", "Ask AI", "Help me", "Theme", "Quit" };
 #else
-    static const char *const soft[5] = { "Formula", "", "", "Theme", "Quit" };
+    static const char *const soft[5] = { "Formula", "", "Help me", "Theme", "Quit" };
 #endif
-    const char *items[NUM_CATS];
+    const char *items[HOME_ITEMS];
     for (uint8_t i = 0; i < NUM_CATS; i++) items[i] = cats[i].name;
-    draw_list(APP_TITLE, "What is the problem about?", items, NUM_CATS, home_sel, soft);
+    items[NUM_CATS] = "Not sure? Help me pick";
+    draw_list(APP_TITLE, "What is the problem about?", items, HOME_ITEMS, home_sel, soft);
+}
+static void draw_quiz(void) {
+    static const char *const soft[5] = { "Back", "", "", "", "Quit" };
+    const qnode_t *q = &qnodes[quiz_node];
+    const char *items[9];
+    for (uint8_t i = 0; i < q->count; i++) items[i] = qopts[q->first + i].label;
+    draw_list("Help me pick", q->ask, items, q->count, quiz_sel, soft);
 }
 static void draw_topics(void) {
     static const char *const soft[5] = { "Back", "", "", "", "" };
@@ -3442,10 +3588,18 @@ static void form_keys(void) {
 
 static bool home_keys(void) {       /* true = quit */
     int8_t d = digit_pressed(), pick = -1;
-    if (pressed_repeat(kb_KeyDown)) { home_sel = (uint8_t)((home_sel + 1) % NUM_CATS); dirty = true; }
-    if (pressed_repeat(kb_KeyUp))   { home_sel = (uint8_t)((home_sel + NUM_CATS - 1) % NUM_CATS); dirty = true; }
+    if (pressed_repeat(kb_KeyDown)) { home_sel = (uint8_t)((home_sel + 1) % HOME_ITEMS); dirty = true; }
+    if (pressed_repeat(kb_KeyUp))   { home_sel = (uint8_t)((home_sel + HOME_ITEMS - 1) % HOME_ITEMS); dirty = true; }
     if (PRESSED(kb_KeyEnter) || PRESSED(kb_KeyRight)) pick = (int8_t)home_sel;
-    if (d >= 1 && d <= (int8_t)NUM_CATS) pick = (int8_t)(d - 1);
+    if (d >= 1 && d <= (int8_t)HOME_ITEMS) pick = (int8_t)(d - 1);
+    if (PRESSED(kb_KeyZoom)) pick = (int8_t)NUM_CATS;
+    if (pick == (int8_t)NUM_CATS) {
+        home_sel = NUM_CATS;
+        quiz_node = quiz_sel = quiz_depth = 0;
+        state = ST_QUIZ;
+        dirty = true;
+        return false;
+    }
     if (PRESSED(kb_KeyTrace) || PRESSED(kb_KeyMode)) { night = !night; apply_theme(); dirty = true; }
     if (PRESSED(kb_KeyYequ)) { build_formula_sheet(); open_reader("Formula sheet", ST_HOME, false); return false; }
 #if USE_CLAUDE
@@ -3467,6 +3621,52 @@ static void topics_keys(void) {
     else if (PRESSED(kb_KeyEnter) || PRESSED(kb_KeyRight)) open_topic((uint8_t)(cat_first(cur_cat) + topic_sel));
     else if (PRESSED(kb_KeyClear) || PRESSED(kb_KeyYequ) || PRESSED(kb_KeyLeft)) { state = ST_HOME; dirty = true; }
     else if (d >= 1 && d <= (int8_t)c->count) { topic_sel = (uint8_t)(d - 1); open_topic((uint8_t)(cat_first(cur_cat) + topic_sel)); }
+}
+static void quiz_pick(const qopt_t *o) {
+    int16_t t;
+    if (o->next) {
+        if (quiz_depth < sizeof quiz_stack) quiz_stack[quiz_depth++] = quiz_node;
+        quiz_node = o->next;
+        quiz_sel = 0;
+        dirty = true;
+        return;
+    }
+    t = local_topic(o->topic);
+    if (t >= 0) {
+        cur_cat = 0;
+        while (cur_cat + 1 < NUM_CATS && cat_first((uint8_t)(cur_cat + 1)) <= t) cur_cat++;
+        home_sel = cur_cat;
+        topic_sel = (uint8_t)(t - cat_first(cur_cat));
+        open_topic((uint8_t)t);
+        notice = "Type what you know. Skip the rest.";
+        return;
+    }
+    /* it lives in another program: say exactly which keys to press */
+    {
+        char d[2] = { (char)('0' + o->prog), 0 }, c[2] = { (char)('0' + o->cat), 0 }, n[2] = { (char)('0' + o->num), 0 };
+        text_len = 0;
+        tput("This one is in PHYS"); tput(d); tput(".\n\n");
+        tput("1) Quit: press CLEAR, then GRAPH\n");
+        tput("2) Run PHYS"); tput(d); tput(" (or PHL"); tput(d); tput(")\n");
+        tput("3) Press "); tput(c); tput("  "); tput(all_cat_names[(o->prog - 1) * 3 + o->cat - 1]); tput("\n");
+        tput("4) Press "); tput(n); tput("  "); tput(o->topic); tput("\n");
+        open_reader("Other program", ST_QUIZ, false);
+    }
+}
+static bool quiz_keys(void) {       /* true = quit */
+    const qnode_t *q = &qnodes[quiz_node];
+    int8_t d = digit_pressed();
+    if (pressed_repeat(kb_KeyDown)) { quiz_sel = (uint8_t)((quiz_sel + 1) % q->count); dirty = true; }
+    else if (pressed_repeat(kb_KeyUp)) { quiz_sel = (uint8_t)((quiz_sel + q->count - 1) % q->count); dirty = true; }
+    else if (PRESSED(kb_KeyEnter) || PRESSED(kb_KeyRight)) quiz_pick(&qopts[q->first + quiz_sel]);
+    else if (d >= 1 && d <= (int8_t)q->count) { quiz_sel = (uint8_t)(d - 1); quiz_pick(&qopts[q->first + quiz_sel]); }
+    else if (PRESSED(kb_KeyClear) || PRESSED(kb_KeyYequ) || PRESSED(kb_KeyLeft)) {
+        if (quiz_depth) { quiz_sel = 0; quiz_node = quiz_stack[--quiz_depth]; }
+        else state = ST_HOME;
+        dirty = true;
+    }
+    else if (PRESSED(kb_KeyGraph)) return true;
+    return false;
 }
 static void read_keys(void) {
     uint16_t ms = max_scroll();
@@ -3519,6 +3719,7 @@ int main(void) {
         switch (state) {
         case ST_HOME:   quit = home_keys(); break;
         case ST_TOPICS: topics_keys(); break;
+        case ST_QUIZ:   quit = quiz_keys(); break;
         case ST_FORM:
             form_keys();
             if (state == ST_FORM && pending && (int32_t)(now_ms() - solve_at) >= 0) settle();
@@ -3561,6 +3762,7 @@ int main(void) {
             switch (state) {
             case ST_HOME:   draw_home(); break;
             case ST_TOPICS: draw_topics(); break;
+            case ST_QUIZ:   draw_quiz(); break;
             case ST_FORM:   draw_form(); break;
             case ST_READ:   draw_read(); break;
 #if USE_CLAUDE
