@@ -920,7 +920,7 @@ static const rule_t spr2_rules[] = {
 };
 
 /* ---------- stick together, then swing / slide / spring / fall ------ */
-enum { Z_M1, Z_V1, Z_M2, Z_VF, Z_H, Z_MU, Z_D, Z_K, Z_X, Z_HT, Z_XR, Z_L, Z_T, Z_K1, Z_KF };
+enum { Z_M1, Z_V1, Z_M2, Z_VF, Z_H, Z_MU, Z_D, Z_K, Z_X, Z_HT, Z_XR, Z_L, Z_T, Z_K1, Z_KF, Z_XF };
 #define ZM (v[Z_M1] + v[Z_M2])
 FN(z_vf,   v[Z_M1] * v[Z_V1] / ZM)
 FN(z_v1,   ZM * v[Z_VF] / v[Z_M1])
@@ -933,6 +933,10 @@ FN(z_mu,   SQ(v[Z_VF]) / (2 * GRAV * v[Z_D]))
 FN(z_x,    v[Z_VF] * root(ZM / v[Z_K]))
 FN(z_vfx,  v[Z_X] * root(v[Z_K] / ZM))
 FN(z_k,    ZM * SQ(v[Z_VF]) / SQ(v[Z_X]))
+#define ZFR (v[Z_MU] * ZM * GRAV)     /* friction force */
+FN(z_xf,   (-ZFR + root(SQ(ZFR) + v[Z_K] * ZM * SQ(v[Z_VF]))) / v[Z_K])
+FN(z_kxf,  (ZM * SQ(v[Z_VF]) - 2 * ZFR * v[Z_XF]) / SQ(v[Z_XF]))
+FN(z_vfxf, root((v[Z_K] * SQ(v[Z_XF]) + 2 * ZFR * v[Z_XF]) / ZM))
 FN(z_xr,   v[Z_VF] * root(2 * v[Z_HT] / GRAV))
 FN(z_vfr,  v[Z_XR] / root(2 * v[Z_HT] / GRAV))
 FN(z_t,    ZM * (GRAV + SQ(v[Z_VF]) / v[Z_L]))
@@ -957,6 +961,7 @@ static const var_t then_vars[] = {
     {"T",   "N",   "T: cord tension right after impact", UNK},
     {"K1",  "J",   "K1: kinetic energy of m1 before", UNK},
     {"Kf",  "J",   "Kf: kinetic energy together after", UNK},
+    {"xf",  "m",   "xf: squeeze if spring AND friction", UNK},
 };
 static const rule_t then_rules[] = {
     {Z_VF, B(Z_M1)|B(Z_V1)|B(Z_M2), z_vf, "m1 v1 = (m1 + m2) vf", 0},
@@ -978,6 +983,10 @@ static const rule_t then_rules[] = {
     {Z_HT, B(Z_XR)|B(Z_VF), z_ht, "xr = vf sqrt(2 Ht / g)", 0},
     {Z_L,  B(Z_T)|B(Z_VF)|B(Z_M1)|B(Z_M2), z_l, "T - M g = M vf^2 / L", 0},
     {Z_M1, B(Z_V1)|B(Z_M2)|B(Z_VF), z_m1, "m1 v1 = (m1 + m2) vf", 0},
+#define Z_EQF "(1/2)M vf^2 = (1/2)k xf^2 + mu_k M g xf"
+    {Z_XF, B(Z_VF)|B(Z_K)|B(Z_MU)|B(Z_M1)|B(Z_M2), z_xf, Z_EQF, 0},
+    {Z_K,  B(Z_VF)|B(Z_XF)|B(Z_MU)|B(Z_M1)|B(Z_M2), z_kxf, Z_EQF, 0},
+    {Z_VF, B(Z_K)|B(Z_XF)|B(Z_MU)|B(Z_M1)|B(Z_M2), z_vfxf, Z_EQF, R_ABS},
 };
 
 /* ---------- center of mass of two objects -------------------------- */
@@ -1889,6 +1898,196 @@ static const rule_t young_rules[] = {
 };
 
 /* ---------- topic table -------------------------------------------- */
+
+/* ---------- three objects: total momentum, or the missing third ---- */
+enum { TR_M1, TR_V1, TR_A1, TR_M2, TR_V2, TR_A2, TR_M3, TR_V3, TR_A3, TR_PX, TR_PY, TR_P, TR_AP, TR_VF, TR_AF, TR_DK };
+#define TRX(m, s, a) (v[m] * v[s] * cos(v[a] * DEG))
+#define TRY(m, s, a) (v[m] * v[s] * sin(v[a] * DEG))
+#define TRM (v[TR_M1] + v[TR_M2] + v[TR_M3])
+#define TR3X (v[TR_PX] - TRX(TR_M1, TR_V1, TR_A1) - TRX(TR_M2, TR_V2, TR_A2))
+#define TR3Y (v[TR_PY] - TRY(TR_M1, TR_V1, TR_A1) - TRY(TR_M2, TR_V2, TR_A2))
+FN(tr_px,  TRX(TR_M1, TR_V1, TR_A1) + TRX(TR_M2, TR_V2, TR_A2) + TRX(TR_M3, TR_V3, TR_A3))
+FN(tr_py,  TRY(TR_M1, TR_V1, TR_A1) + TRY(TR_M2, TR_V2, TR_A2) + TRY(TR_M3, TR_V3, TR_A3))
+FN(tr_p,   sqrt(SQ(v[TR_PX]) + SQ(v[TR_PY])))
+FN(tr_ap,  atan2(v[TR_PY], v[TR_PX]) / DEG)
+FN(tr_pxp, v[TR_P] * cos(v[TR_AP] * DEG))
+FN(tr_pyp, v[TR_P] * sin(v[TR_AP] * DEG))
+FN(tr_p0,  fabs(v[TR_P]) < 1e-9 ? 0 : UNK)
+FN(tr_vf,  v[TR_P] / TRM)
+FN(tr_pvf, TRM * v[TR_VF])
+FN(tr_af,  v[TR_AP])
+FN(tr_apf, v[TR_AF])
+FN(tr_v3,  sqrt(SQ(TR3X) + SQ(TR3Y)) / v[TR_M3])
+FN(tr_a3,  atan2(TR3Y, TR3X) / DEG)
+FN(tr_dk,  0.5 * TRM * SQ(v[TR_VF]) - 0.5 * v[TR_M1] * SQ(v[TR_V1]) - 0.5 * v[TR_M2] * SQ(v[TR_V2]) - 0.5 * v[TR_M3] * SQ(v[TR_V3]))
+static const var_t tri_vars[] = {
+    {"m1", "kg",  "m1: first object", UNK},
+    {"v1", "m/s", "v1: its speed", UNK},
+    {"a1", "deg", "a1: its direction (blank = +x)", 0},
+    {"m2", "kg",  "m2: second object", UNK},
+    {"v2", "m/s", "v2: its speed", UNK},
+    {"a2", "deg", "a2: its direction (blank = +x)", 0},
+    {"m3", "kg",  "m3: third object (0 = leave out)", UNK},
+    {"v3", "m/s", "v3: its speed", UNK},
+    {"a3", "deg", "a3: its direction (blank = +x)", 0},
+    {"Px", "kg m/s", "Px: total momentum, x part", UNK},
+    {"Py", "kg m/s", "Py: total momentum, y part", UNK},
+    {"P",  "kg m/s", "P: total momentum (size)", UNK},
+    {"aP", "deg", "aP: direction of total momentum", UNK},
+    {"vf", "m/s", "vf: speed if all 3 stick together", UNK},
+    {"af", "deg", "af: direction if they stick", UNK},
+    {"dK", "J",   "dK: KE change if they stick", UNK},
+};
+#define TR_12 (B(TR_M1)|B(TR_V1)|B(TR_A1)|B(TR_M2)|B(TR_V2)|B(TR_A2))
+#define TR_ALL (TR_12|B(TR_M3)|B(TR_V3)|B(TR_A3))
+#define TR_EQ3 "p3 = P - p1 - p2 (x and y parts)"
+static const rule_t tri_rules[] = {
+    {TR_PX, TR_ALL, tr_px, "Px = sum of m v cos(a)", 0},
+    {TR_PY, TR_ALL, tr_py, "Py = sum of m v sin(a)", 0},
+    {TR_PX, B(TR_P), tr_p0, "P = 0, so Px = Py = 0", R_NOCHK},
+    {TR_PY, B(TR_P), tr_p0, "P = 0, so Px = Py = 0", R_NOCHK},
+    {TR_PX, B(TR_P)|B(TR_AP), tr_pxp, "Px = P cos(aP)", 0},
+    {TR_PY, B(TR_P)|B(TR_AP), tr_pyp, "Py = P sin(aP)", 0},
+    {TR_P,  B(TR_PX)|B(TR_PY), tr_p, "P = sqrt(Px^2 + Py^2)", 0},
+    {TR_AP, B(TR_PX)|B(TR_PY), tr_ap, "tan(aP) = Py / Px", R_NOCHK},
+    {TR_P,  B(TR_M1)|B(TR_M2)|B(TR_M3)|B(TR_VF), tr_pvf, "P = (m1 + m2 + m3) vf", 0},
+    {TR_AP, B(TR_AF), tr_apf, "aP = af (momentum is conserved)", R_NOCHK},
+    {TR_VF, B(TR_M1)|B(TR_M2)|B(TR_M3)|B(TR_P), tr_vf, "P = (m1 + m2 + m3) vf", 0},
+    {TR_AF, B(TR_AP), tr_af, "af = aP (momentum is conserved)", R_NOCHK},
+    {TR_V3, TR_12|B(TR_M3)|B(TR_PX)|B(TR_PY), tr_v3, TR_EQ3, 0},
+    {TR_A3, TR_12|B(TR_M3)|B(TR_PX)|B(TR_PY), tr_a3, TR_EQ3, R_NOCHK},
+    {TR_DK, TR_ALL|B(TR_VF), tr_dk, "dK = K after - K before", 0},
+};
+
+/* ---------- walking along a boat / log / canoe --------------------- */
+enum { WB_MP, WB_MB, WB_M2, WB_D, WB_S, WB_XP };
+#define WBT (v[WB_MP] + v[WB_MB] + v[WB_M2])
+FN(wb_s,  v[WB_MP] * v[WB_D] / WBT)
+FN(wb_d,  v[WB_S] * WBT / v[WB_MP])
+FN(wb_xp, v[WB_D] - v[WB_S])
+FN(wb_mb, v[WB_MP] * v[WB_D] / v[WB_S] - v[WB_MP] - v[WB_M2])
+FN(wb_mp, v[WB_S] * (v[WB_MB] + v[WB_M2]) / (v[WB_D] - v[WB_S]))
+static const var_t boat_vars[] = {
+    {"mp", "kg", "mp: the person who walks", UNK},
+    {"mb", "kg", "mb: the boat / log / canoe", UNK},
+    {"m2", "kg", "m2: anyone else riding (blank = 0)", 0},
+    {"d",  "m",  "d: how far they walk along the boat", UNK},
+    {"s",  "m",  "s: boat slides this far, other way", UNK},
+    {"xp", "m",  "xp: walker moves this far over water", UNK},
+};
+#define WB_EQ "cm stays put: mp d = (mp+mb+m2) s"
+static const rule_t boat_rules[] = {
+    {WB_S,  B(WB_MP)|B(WB_MB)|B(WB_M2)|B(WB_D), wb_s, WB_EQ, 0},
+    {WB_D,  B(WB_MP)|B(WB_MB)|B(WB_M2)|B(WB_S), wb_d, WB_EQ, 0},
+    {WB_MB, B(WB_MP)|B(WB_M2)|B(WB_D)|B(WB_S), wb_mb, WB_EQ, 0},
+    {WB_MP, B(WB_MB)|B(WB_M2)|B(WB_D)|B(WB_S), wb_mp, WB_EQ, 0},
+    {WB_XP, B(WB_D)|B(WB_S), wb_xp, "xp = d - s", 0},
+};
+
+/* ---------- dropping onto an up-and-down spring --------------------- */
+enum { DS_M1, DS_H, DS_M2, DS_K, DS_X0, DS_V, DS_VF, DS_S, DS_XM, DS_U0, DS_UM };
+#define DSM (v[DS_M1] + v[DS_M2])
+FN(ds_x0, v[DS_M2] * GRAV / v[DS_K])
+FN(ds_k,  v[DS_X0] > 0 && v[DS_M2] > 0 ? v[DS_M2] * GRAV / v[DS_X0] : UNK)
+FN(ds_v,  root(2 * GRAV * v[DS_H]))
+FN(ds_h,  SQ(v[DS_V]) / (2 * GRAV))
+FN(ds_vf, v[DS_M1] * v[DS_V] / DSM)
+FN(ds_s,  (v[DS_M1] * GRAV + root(SQ(v[DS_M1] * GRAV) + v[DS_K] * DSM * SQ(v[DS_VF]))) / v[DS_K])
+FN(ds_xm, v[DS_X0] + v[DS_S])
+FN(ds_u0, 0.5 * v[DS_K] * SQ(v[DS_X0]))
+FN(ds_um, 0.5 * v[DS_K] * SQ(v[DS_XM]))
+static const var_t drop_vars[] = {
+    {"m1", "kg",  "m1: the thing that falls", UNK},
+    {"h",  "m",   "h: how far it falls before it hits", UNK},
+    {"m2", "kg",  "m2: already sitting on spring (or 0)", 0},
+    {"k",  "N/m", "k: spring constant", UNK},
+    {"x0", "m",   "x0: spring squeeze from m2 alone", UNK},
+    {"v",  "m/s", "v: speed of m1 just before it hits", UNK},
+    {"vf", "m/s", "vf: speed just after (stuck together)", UNK},
+    {"s",  "m",   "s: how far down it goes after that", UNK},
+    {"xmax","m",  "xmax: total spring squeeze at bottom", UNK},
+    {"U0", "J",   "U0: spring energy before the drop", UNK},
+    {"Umax","J",  "Umax: most spring energy (at bottom)", UNK},
+};
+static const rule_t drop_rules[] = {
+    {DS_X0, B(DS_M2)|B(DS_K), ds_x0, "k x0 = m2 g (m2 at rest on spring)", 0},
+    {DS_K,  B(DS_M2)|B(DS_X0), ds_k, "k x0 = m2 g (m2 at rest on spring)", 0},
+    {DS_V,  B(DS_H), ds_v, "v^2 = 2 g h (free fall)", 0},
+    {DS_H,  B(DS_V), ds_h, "v^2 = 2 g h (free fall)", 0},
+    {DS_VF, B(DS_M1)|B(DS_M2)|B(DS_V), ds_vf, "m1 v = (m1 + m2) vf", 0},
+    {DS_S,  B(DS_M1)|B(DS_M2)|B(DS_K)|B(DS_VF), ds_s, "(1/2)M vf^2 + M g s = (1/2)k s^2 + m2 g s", 0},
+    {DS_XM, B(DS_X0)|B(DS_S), ds_xm, "xmax = x0 + s", 0},
+    {DS_U0, B(DS_K)|B(DS_X0), ds_u0, "U = (1/2) k x^2", 0},
+    {DS_UM, B(DS_K)|B(DS_XM), ds_um, "U = (1/2) k x^2", 0},
+};
+
+/* ---------- swinging on a rope: speed and tension anywhere --------- */
+enum { SW_M, SW_L, SW_V0, SW_H, SW_TH, SW_V, SW_T, SW_T0 };
+#define SWC (1 - v[SW_H] / v[SW_L])     /* cos(th) */
+FN(sw_h,   v[SW_L] * (1 - cos(v[SW_TH] * DEG)))
+FN(sw_th,  acosz(SWC) / DEG)
+FN(sw_v,   root(SQ(v[SW_V0]) - 2 * GRAV * v[SW_H]))
+FN(sw_v0,  root(SQ(v[SW_V]) + 2 * GRAV * v[SW_H]))
+FN(sw_hv,  (SQ(v[SW_V0]) - SQ(v[SW_V])) / (2 * GRAV))
+FN(sw_t,   v[SW_M] * (SQ(v[SW_V]) / v[SW_L] + GRAV * SWC))
+FN(sw_vt,  root(v[SW_L] * (v[SW_T] / v[SW_M] - GRAV * SWC)))
+FN(sw_m,   v[SW_T] / (SQ(v[SW_V]) / v[SW_L] + GRAV * SWC))
+FN(sw_t0,  v[SW_M] * (SQ(v[SW_V0]) / v[SW_L] + GRAV))
+FN(sw_v0t, root(v[SW_L] * (v[SW_T0] / v[SW_M] - GRAV)))
+static const var_t swing_vars[] = {
+    {"m",  "kg",  "m: mass on the rope", UNK},
+    {"L",  "m",   "L: rope length", UNK},
+    {"v0", "m/s", "v0: speed at the bottom", UNK},
+    {"h",  "m",   "h: height above the bottom", UNK},
+    {"th", "deg", "th: rope angle from straight down", UNK},
+    {"v",  "m/s", "v: speed at that height (top: 0)", UNK},
+    {"T",  "N",   "T: rope tension at that height", UNK},
+    {"T0", "N",   "T0: rope tension at the bottom", UNK},
+};
+#define SW_EQE "v^2 = v0^2 - 2 g h"
+#define SW_EQT "T - m g cos(th) = m v^2 / L"
+static const rule_t swing_rules[] = {
+    {SW_H,  B(SW_L)|B(SW_TH), sw_h, "h = L (1 - cos(th))", 0},
+    {SW_TH, B(SW_L)|B(SW_H), sw_th, "h = L (1 - cos(th))", R_ABS},
+    {SW_V,  B(SW_V0)|B(SW_H), sw_v, SW_EQE, R_ABS},
+    {SW_V0, B(SW_V)|B(SW_H), sw_v0, SW_EQE, R_ABS},
+    {SW_H,  B(SW_V0)|B(SW_V), sw_hv, SW_EQE, 0},
+    {SW_T,  B(SW_M)|B(SW_L)|B(SW_V)|B(SW_H), sw_t, SW_EQT, 0},
+    {SW_V,  B(SW_M)|B(SW_L)|B(SW_T)|B(SW_H), sw_vt, SW_EQT, R_ABS},
+    {SW_M,  B(SW_T)|B(SW_L)|B(SW_V)|B(SW_H), sw_m, SW_EQT, 0},
+    {SW_T0, B(SW_M)|B(SW_L)|B(SW_V0), sw_t0, "T0 - m g = m v0^2 / L", 0},
+    {SW_V0, B(SW_M)|B(SW_L)|B(SW_T0), sw_v0t, "T0 - m g = m v0^2 / L", R_ABS},
+};
+
+/* ---------- force-time graph made of straight pieces --------------- */
+enum { FG_F0, FG_F1, FG_T1, FG_F2, FG_T2, FG_F3, FG_T3, FG_J, FG_M, FG_V1, FG_V2 };
+FN(fg_j,  0.5 * (v[FG_F0] + v[FG_F1]) * v[FG_T1] + 0.5 * (v[FG_F1] + v[FG_F2]) * v[FG_T2] + 0.5 * (v[FG_F2] + v[FG_F3]) * v[FG_T3])
+FN(fg_v2, v[FG_V1] + v[FG_J] / v[FG_M])
+FN(fg_v1, v[FG_V2] - v[FG_J] / v[FG_M])
+FN(fg_m,  v[FG_J] / (v[FG_V2] - v[FG_V1]))
+FN(fg_jv, v[FG_M] * (v[FG_V2] - v[FG_V1]))
+static const var_t graph_vars[] = {
+    {"F0", "N",   "F0: force where the graph starts", UNK},
+    {"F1", "N",   "F1: force at the end of piece 1", UNK},
+    {"t1", "s",   "t1: how long piece 1 lasts", UNK},
+    {"F2", "N",   "F2: force at the end of piece 2", 0},
+    {"t2", "s",   "t2: how long piece 2 lasts (or 0)", 0},
+    {"F3", "N",   "F3: force at the end of piece 3", 0},
+    {"t3", "s",   "t3: how long piece 3 lasts (or 0)", 0},
+    {"J",  "N s", "J: impulse = area under the graph", UNK},
+    {"m",  "kg",  "m: mass", UNK},
+    {"v1", "m/s", "v1: velocity before (blank = 0)", 0},
+    {"v2", "m/s", "v2: velocity after", UNK},
+};
+#define FG_EQ "J = m (v2 - v1)"
+static const rule_t graph_rules[] = {
+    {FG_J,  B(FG_F0)|B(FG_F1)|B(FG_T1)|B(FG_F2)|B(FG_T2)|B(FG_F3)|B(FG_T3), fg_j, "J = area = sum of (Fa + Fb)/2 x time", 0},
+    {FG_V2, B(FG_J)|B(FG_M)|B(FG_V1), fg_v2, FG_EQ, 0},
+    {FG_J,  B(FG_M)|B(FG_V1)|B(FG_V2), fg_jv, FG_EQ, 0},
+    {FG_M,  B(FG_J)|B(FG_V1)|B(FG_V2), fg_m, FG_EQ, 0},
+    {FG_V1, B(FG_J)|B(FG_M)|B(FG_V2), fg_v1, FG_EQ, 0},
+};
+
 #define N(a) ((uint8_t)(sizeof(a) / sizeof((a)[0])))
 #define TOPIC(name, vars, rules, tips) { name, vars, N(vars), rules, N(rules), tips }
 static const topic_t topics[] = {
@@ -1971,6 +2170,18 @@ static const topic_t topics[] = {
     TOPIC("Spring (Hooke's law)", hooke_vars, hooke_rules,
         "stretches 5 cm: x = 0.05\nmass hung on it: type m, read F\n"
         "  then x or k\n1.85 N/cm: k = 185\nenergy stored: read U"),
+    TOPIC("Drop onto a spring", drop_vars, drop_rules,
+        "Spring stands up (or hangs) and\nsomething falls onto it.\n"
+        "nothing on the spring yet: leave\n  m2 blank\n"
+        "m2 stretches it 4 cm: x0 = 0.04,\n  k fills in\n"
+        "set on gently, not dropped: h = 0\n"
+        "how far down it moves: read s\nmost spring energy: read Umax"),
+    TOPIC("Swing: speed + tension", swing_vars, swing_rules,
+        "Anything swinging on a rope or\ncord: pendulum, block, Tarzan.\n"
+        "let go from rest: v = 0 at that\n  h or th, read v0\n"
+        "rope level: th = 90\n"
+        "tension when it has risen 0.8 m:\n  h = 0.8, read T\n"
+        "bullet sticks first: get v0 here,\nthen type it as vf in Stick, then\nwhat happens (in PHYS2)"),
 #endif
 #if PART == 0 || PART == 2
     /* Momentum */
@@ -2038,6 +2249,20 @@ static const topic_t topics[] = {
         "Angles: east 0, north 90,\nwest 180, south 270 (or -90)\n"
         "60 south of east: -60\ntackle, enmeshed, move as one,\nlocked together: use this one\n"
         "Know the angle after but not one\nspeed before: type af, leave that\nspeed blank. Know vf and af: leave\nboth speeds blank."),
+    TOPIC("3 objects at once", tri_vars, tri_rules,
+        "Angles: east 0, north 90,\nwest 180, south 270. Blank = 0.\n"
+        "all on one line: skip the angles,\n  moving left = negative v\n"
+        "total of only 2 of them: m3 = 0\n"
+        "all start at rest (explode, jump\n  off, recoil): P = 0\n"
+        "the unknown one goes in slot 3\n"
+        "want p3, not v3: type m3 = 1\n"
+        "all stick: read vf, af, dK\n"
+        "given weights (N): type them as\n  the masses, it still works"),
+    TOPIC("Walk on a boat / log", boat_vars, boat_rules,
+        "Nobody pushes from outside, so\nthe balance point stays put.\n"
+        "walks from 1 m from one end to\n  1 m from the other of a 5 m\n  canoe: d = 3\n"
+        "friend stands still on it: m2\n"
+        "how far the boat moves: read s"),
     /* Changing force (calc) */
     TOPIC("Force F = A t^n", pow_vars, pow_rules,
         "F = 3.00 t:  A = 3, n = 1\nF = A t^2: n = 2; type F2 and t2\n  to get A\n"
@@ -2050,6 +2275,13 @@ static const topic_t topics[] = {
         "constant term: its rate is 0\nB t (n = 1): rate is just B\n"
         "two terms: do each, then add\n"
         "Other formulas: FlowCE's MATH\nkey has a derivative template."),
+    TOPIC("Force graph (area)", graph_vars, graph_rules,
+        "Read the corners off the graph.\nEach piece is a straight line.\n"
+        "flat 80 N for 12 s, then down to\n  0 in 6 s: F0 = 80, F1 = 80,\n  t1 = 12, F2 = 0, t2 = 6\n"
+        "triangle 0 up to 5 N in 4 s, back\n  to 0 in 6 s: F0 = 0, F1 = 5,\n  t1 = 4, F2 = 0, t2 = 6\n"
+        "kN -> N: E3    ms -> s: E-3\n"
+        "starts at rest: leave v1 blank\n"
+        "force to the left: negative F"),
 #endif
 #if PART == 0 || PART == 3
     /* Rotation */
@@ -2117,12 +2349,12 @@ static const cat_t cats[] = {
 #if PART == 0 || PART == 1
     {"Motion", 7},
     {"Forces", 8},
-    {"Energy", 4},
+    {"Energy", 6},
 #endif
 #if PART == 0 || PART == 2
     {"Momentum", 9},
-    {"Momentum in 2-D", 3},
-    {"Changing force (calc)", 2},
+    {"2-D, 3 objects, boats", 5},
+    {"Changing force (calc)", 3},
 #endif
 #if PART == 0 || PART == 3
     {"Rotation", 8},
@@ -2152,7 +2384,7 @@ typedef struct { const char *ask; uint8_t first, count; } qnode_t;
 #define QA(label, node)             { label, node, 0, 0, 0, NULL }
 #define QT(label, p, c, n, topic)   { label, 0, p, c, n, topic }
 static const char *const all_cat_names[9] = {
-    "Motion", "Forces", "Energy", "Momentum", "Momentum in 2-D", "Changing force (calc)",
+    "Motion", "Forces", "Energy", "Momentum", "2-D, 3 objects, boats", "Changing force (calc)",
     "Rotation", "Gravity + springs", "Fluids + solids" };
 static const qopt_t qopts[] = {
     /* 0: start (8) */
@@ -2189,6 +2421,8 @@ static const qopt_t qopts[] = {
     QT("Power: how fast (watts)", 1, 3, 1, "Work and power"),
     QT("Work changes its speed", 1, 3, 2, "Work-energy theorem"),
     QT("Spring: k, stretch, force", 1, 3, 4, "Spring (Hooke's law)"),
+    QT("Falls onto an up/down spring", 1, 3, 5, "Drop onto a spring"),
+    QT("Swings on a rope: speed, pull", 1, 3, 6, "Swing: speed + tension"),
     /* 4: collisions (9) */
     QT("They stick together", 2, 1, 1, "Collision: stick together"),
     QT("Bounce, NO energy lost (elastic)", 2, 1, 2, "Collision: elastic"),
@@ -2233,19 +2467,22 @@ static const qopt_t qopts[] = {
     QT("Rocket burns fuel", 2, 1, 9, "Rocket thrust"),
     QT("Force changes with time: A t^n", 2, 3, 1, "Force F = A t^n"),
     QT("Rate of change (d/dt)", 2, 3, 2, "Rate of change (d/dt)"),
+    QT("3 objects at once", 2, 2, 4, "3 objects at once"),
+    QT("Walks on a boat, canoe, or log", 2, 2, 5, "Walk on a boat / log"),
+    QT("Force from a graph (area)", 2, 3, 3, "Force graph (area)"),
 };
 static const qnode_t qnodes[] = {
     {"What is going on?", 0, 8},
     {"How does it move?", 8, 6},
     {"What is it doing?", 14, 9},
-    {"What happens?", 23, 7},
-    {"What do the objects do?", 30, 9},
-    {"What is spinning doing?", 39, 8},
-    {"Which one?", 47, 5},
-    {"Which one?", 52, 4},
-    {"Which one?", 56, 3},
-    {"Which one?", 59, 3},
-    {"Which one?", 62, 5},
+    {"What happens?", 23, 9},
+    {"What do the objects do?", 32, 9},
+    {"What is spinning doing?", 41, 8},
+    {"Which one?", 49, 5},
+    {"Which one?", 54, 4},
+    {"Which one?", 58, 3},
+    {"Which one?", 61, 3},
+    {"Which one?", 64, 8},
 };
 /* a problem type in this program, or -1 */
 static int16_t local_topic(const char *name) {
@@ -2524,7 +2761,19 @@ static void step_walk(uint8_t i) {
     tput("\n");
     { char n[4] = { (char)('0' + step_no / 10), (char)('0' + step_no % 10), 0, 0 };
       tput(step_no >= 10 ? n : n + 1); }
-    tput(") "); tput(R->eq); tput("\n   "); tvar(i); tput("\n");
+    tput(") "); tput(R->eq); tput("\n");
+    if (R->need) {          /* the numbers that went into it */
+        bool first = true;
+        tput("   with ");
+        for (uint8_t j = 0; j < tp->nvars; j++) {
+            if (!(R->need & B(j))) continue;
+            if (!first) tput(", ");
+            tput(tp->vars[j].sym); tput(" = "); tnum(val[j]);
+            first = false;
+        }
+        tput("\n");
+    }
+    tput("   -> "); tvar(i); tput("\n");
 }
 
 static uint8_t bits(uint16_t m) { uint8_t n = 0; for (; m; m &= (uint16_t)(m - 1)) n++; return n; }
@@ -2645,6 +2894,51 @@ static const char *situation_note(void) {
     }
 #endif
     return NULL;
+}
+
+static void work_tail(void) {
+    if (situation_note()) { tput("\nNOTE\n   "); tput(situation_note()); tput("\n"); }
+    if (conflict >= 0) {
+        tput("\nWARNING: your numbers do not agree with\n   ");
+        tput(tp->rules[conflict].eq);
+        tput("\nCheck signs and what you typed.\n");
+    }
+}
+/* the whole problem written out: givens, every step with its formula and
+   numbers, the answers, then each different formula that was used */
+static void build_work(void) {
+    bool any = false;
+    text_len = 0;
+    tput("GIVEN\n");
+    for (uint8_t i = 0; i < tp->nvars; i++) {
+        if (st[i] == S_USER) { tput("   "); tvar(i); tput("\n"); any = true; }
+        else if (st[i] == S_DEF) { tput("   "); tvar(i); tput(" (assumed)\n"); }
+    }
+    if (!any) tput("   (nothing entered yet)\n");
+    step_done = 0;
+    step_no = 0;
+    any = false;
+    for (uint8_t i = 0; i < tp->nvars; i++) if (st[i] == S_SOLVED) any = true;
+    if (!any) {
+        tput("\nNothing solved yet. Type the numbers\nthe problem gives you, then come\nback here to see the work.\n\nFORMULAS ON THIS SCREEN\n");
+        put_formulas(tp);
+        work_tail();
+        return;
+    }
+    tput("\nWORK");
+    for (uint8_t i = 0; i < tp->nvars; i++) step_walk(i);
+    tput("\nANSWERS\n");
+    for (uint8_t i = 0; i < tp->nvars; i++)
+        if (st[i] == S_SOLVED) { tput("   "); tvar(i); tput("\n"); }
+    tput("\nFORMULAS USED\n");
+    for (uint8_t i = 0; i < tp->nvars; i++) {
+        bool dup = false;
+        if (st[i] != S_SOLVED) continue;
+        for (uint8_t j = 0; j < i && !dup; j++)
+            dup = st[j] == S_SOLVED && !strcmp(tp->rules[by[j]].eq, tp->rules[by[i]].eq);
+        if (!dup) { tput("   "); tput(tp->rules[by[i]].eq); tput("\n"); }
+    }
+    work_tail();
 }
 
 static void build_steps(uint8_t target) {
@@ -2773,6 +3067,10 @@ int main(int argc, char **argv) {
     char b[32];
     if (argc > 1 && !strcmp(argv[1], "--solve")) return solve_lines();
     if (argc > 1 && !strcmp(argv[1], "--topics")) return list_topics();
+    if (argc > 2 && !strcmp(argv[1], "--work")) {
+        char buf[300]; snprintf(buf, sizeof buf, "%s |", argv[3]);
+        check(argv[2], buf); build_work(); printf("%s", text); return 0;
+    }
     if (argc > 1 && !strcmp(argv[1], "--sheet")) { tp = &topics[0]; build_formula_sheet(); printf("%s\n[%u chars]\n", text, text_len); return 0; }
     /* number formatting */
     struct { double x; const char *s; } f[] = { {0, "0"}, {5.1, "5.1"}, {-19.799, "-19.8"}, {35.3477, "35.35"},
@@ -2886,6 +3184,29 @@ int main(int argc, char **argv) {
     check("Springs and pendulums", "m=0.5 k=200 A=0.04 | w=20 T=0.3142 vmax=0.8 amax=16");
     check("Vector components", "Ax=3 Ay=4 | A=5 th=53.13");
 
+    /* new screens */
+    full("3 objects at once", "m1=2 v1=3 a1=20 m2=1.5 v2=4 a2=130 m3=3 v3=2 a3=250");
+    full("Walk on a boat / log", "mp=45 mb=60 d=3");
+    full("Drop onto a spring", "m1=0.5 h=4 m2=0.5 k=80");
+    full("Swing: speed + tension", "m=2 L=1.5 v0=5 th=40");
+    full("Force graph (area)", "F0=0 F1=5 t1=4 F2=0 t2=6 m=3");
+    check("3 objects at once", "m1=0.020 v1=1.50 a1=180 m2=0.030 v2=0.50 a2=240 m3=0.050 vf=0.50 af=0 | v3=1.769 a3=8.44 dK=-0.0920"); /* 8.69 */
+    check("3 objects at once", "m1=0.0072 v1=599.05 m2=2.90 v2=-1.95 m3=1 P=0 | v3=1.342");  /* 8.17: v3 is p of the gas */
+    check("3 objects at once", "m1=800 v1=4.3301 a1=180 m2=600 v2=5.5978 m3=1000 P=0 | v3=0.1054 a3=0"); /* 8.90 */
+    check("3 objects at once", "m1=5 v1=11 a1=270 m2=6 v2=10 a2=60 m3=0 v3=0 | Px=30 Py=-3.038"); /* two of three */
+    check("Walk on a boat / log", "mp=45.0 mb=60.0 d=3.00 | s=1.286");                      /* 8.92 */
+    check("Walk on a boat / log", "mp=35.5 mb=280 m2=26.0 d=3.4 | s=0.3534");               /* 8.91 */
+    check("Drop onto a spring", "m1=0.500 h=4.00 m2=0.500 k=80.0 | U0=0.1501 s=0.56 Umax=15.44"); /* 8.95 */
+    check("Drop onto a spring", "m1=0.200 h=0.300 m2=0.150 x0=0.0400 | k=36.75 s=0.1987");  /* 8.78 */
+    check("Drop onto a spring", "m1=2 h=0 k=100 | s=0.392");                                /* set on and let go */
+    check("Swing: speed + tension", "m=0.812 L=1.60 h=0.800 T=4.80 | v0=4.159");            /* 8.72, then Stick */
+    check("Stick, then what happens", "m1=0.0120 m2=0.800 vf=4.159 | v1=281.4");            /* 8.72 */
+    check("Swing: speed + tension", "m=1 L=2 th=60 v=0 | v0=4.427 T0=19.6");
+    check("Force graph (area)", "F0=80 F1=80 t1=12 F2=0 t2=6 m=80 | J=1200 v2=15");         /* 8.12 */
+    check("Force graph (area)", "F0=0 F1=5 t1=4 F2=0 t2=6 m=3 | v2=8.333");                 /* 8.70 */
+    check("Force graph (area)", "F0=0 F1=2500 t1=0.001 m=2 v1=6 | J=1.25 v2=6.625");
+    check("Stick, then what happens", "m1=0.015552 v1=259.38 m2=2.00 mu_k=0.38 xf=0.25 | k=69.13"); /* 8.101b */
+    check("Stick, then what happens", "m1=0.005184 v1=508.10 m2=2.00 mu_k=0.38 k=69.13 | xf=0.1404"); /* 8.101c */
     /* Chapter 8 exercises (numbers only) */
     check("Projectile", "th=0 y=-1.2 x=2 | v0=4.0415");                                     /* 8.89 */
     check("Projectile", "th=30 y=-5 x=20 | v0=12.567");                                      /* lands below, at an angle */
@@ -3212,9 +3533,9 @@ static void draw_topics(void) {
 
 static void draw_form(void) {
 #if USE_CLAUDE
-    static const char *const soft[5] = { "Menu", "Reset", "Tips", "Steps", "Ask AI" };
+    static const char *const soft[5] = { "Menu", "Reset", "Tips", "Work", "Ask AI" };
 #else
-    static const char *const soft[5] = { "Menu", "Reset", "Tips", "Steps", "" };
+    static const char *const soft[5] = { "Menu", "Reset", "Tips", "Work", "" };
 #endif
     char b[24];
     draw_frame(tp->name, soft);
@@ -3545,13 +3866,18 @@ static void show_steps(void) {
     build_steps(row);
     open_reader("Steps", ST_FORM, false);
 }
+static void show_work(void) {
+    settle();
+    build_work();
+    open_reader("Work", ST_FORM, false);
+}
 static void show_tips(void) {
     text_len = 0;
     tput("WORDS IN THE PROBLEM -> WHAT TO TYPE\n\n");
     tput(tp->tips);
     tput("\n\nFORMULAS USED HERE\n");
     put_formulas(tp);
-    tput("\nKEYS\n(-) negative   ^ types E (3E8)\nCLEAR empties a value\nENTER on a solved value = steps\n");
+    tput("\nKEYS\n(-) negative   ^ types E (3E8)\nCLEAR empties a value\nENTER on a solved value = steps\nTRACE (Work) = all the work + formulas\n");
     open_reader("Tips", ST_FORM, false);
 }
 
@@ -3567,7 +3893,7 @@ static void form_keys(void) {
         if (st[row] == S_SOLVED) show_steps();
         else { row = (uint8_t)((row + 1) % tp->nvars); dirty = true; }
     }
-    else if (PRESSED(kb_KeyTrace)) show_steps();
+    else if (PRESSED(kb_KeyTrace)) show_work();
     else if (PRESSED(kb_KeyZoom)) show_tips();
     else if (PRESSED(kb_KeyWindow)) { memset(txt, 0, sizeof txt); pending = false; solve(); dirty = true; }
     else if (PRESSED(kb_KeyYequ)) { state = ST_TOPICS; dirty = true; }
