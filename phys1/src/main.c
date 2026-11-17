@@ -12,9 +12,16 @@
  *   USE_CLAUDE=0 builds the same solver with no USB code (PHL1-3).
  *
  * Keys (form): digits . (-) type a value   ^ or , = E (3E8)
+ *   LEFT = make it negative (left/west/down), RIGHT = positive
  *   UP/DOWN field   DEL backspace   CLEAR erase field / go back
  *   ENTER steps for this value      MODE light/dark
  *   Y= menu  WINDOW reset  ZOOM tips  TRACE steps  GRAPH Ask AI
+ * Home or topic list (PHYS2): ZOOM = Help me pick. It asks a few yes/no
+ *   questions, opens the right topic, fills in what the answers already
+ *   say (stick = e 0, recoil = start at rest), then walks you box by box:
+ *   ENTER = next box (blank is fine), UP = back a box.
+ * Size: PHYS2 is ~64 KB once decompressed into RAM (the .8xp is compressed),
+ *   so keep ~100 KB of RAM free. More topics: move a category to PHYS3.
  */
 
 #ifndef USE_CLAUDE
@@ -543,89 +550,67 @@ static const rule_t en_rules[] = {
     {E_H1, E_ALLBUT(E_H1) & ~B(E_M), e_h1n, "v2^2 = v1^2 + 2 g (h1 - h2)", 0},
 };
 
-/* ---------- 11-13. momentum: 0=m1 1=v1 2=m2 3=v2 4,5 = after -------- */
-/* stick together: 4=vf 5=dK */
-FN(s_vf,  (v[0] * v[1] + v[2] * v[3]) / (v[0] + v[2]))
-FN(s_v1,  ((v[0] + v[2]) * v[4] - v[2] * v[3]) / v[0])
-FN(s_v2,  ((v[0] + v[2]) * v[4] - v[0] * v[1]) / v[2])
-FN(s_m1,  v[2] * (v[3] - v[4]) / (v[4] - v[1]))
-FN(s_m2,  v[0] * (v[1] - v[4]) / (v[4] - v[3]))
-FN(s_dk,  0.5 * (v[0] + v[2]) * SQ(v[4]) - 0.5 * v[0] * SQ(v[1]) - 0.5 * v[2] * SQ(v[3]))
-static const var_t stick_vars[] = {
-    {"m1", "kg",  "m1: first object", UNK},
-    {"v1", "m/s", "v1: its velocity before (left = -)", UNK},
-    {"m2", "kg",  "m2: second object", UNK},
-    {"v2", "m/s", "v2: its velocity before (rest: 0)", UNK},
-    {"vf", "m/s", "vf: shared velocity after sticking", UNK},
-    {"dK", "J",   "dK: kinetic energy change (- = lost)", UNK},
-};
-#define S_EQ "m1 v1 + m2 v2 = (m1 + m2) vf"
-static const rule_t stick_rules[] = {
-    {4, B(0)|B(1)|B(2)|B(3), s_vf, S_EQ, 0},
-    {1, B(0)|B(2)|B(3)|B(4), s_v1, S_EQ, 0},
-    {3, B(0)|B(1)|B(2)|B(4), s_v2, S_EQ, 0},
-    {0, B(1)|B(2)|B(3)|B(4), s_m1, S_EQ, 0},
-    {2, B(0)|B(1)|B(3)|B(4), s_m2, S_EQ, 0},
-    {5, B(0)|B(1)|B(2)|B(3)|B(4), s_dk, "dK = K after - K before", 0},
-};
-/* elastic: 4=v1f 5=v2f */
-FN(el_v1f, ((v[0] - v[2]) * v[1] + 2 * v[2] * v[3]) / (v[0] + v[2]))
-FN(el_v2f, (2 * v[0] * v[1] + (v[2] - v[0]) * v[3]) / (v[0] + v[2]))
-FN(el_r2f, v[1] - v[3] + v[4])
-FN(el_r1f, v[5] - v[1] + v[3])
-FN(el_r1,  v[3] + v[5] - v[4])
-FN(el_r2,  v[1] - v[5] + v[4])
-FN(el_dp1, v[0] * (v[4] - v[1]))
-FN(el_dk1, 0.5 * v[0] * (SQ(v[4]) - SQ(v[1])))
-FN(g_m1,   v[2] * (v[5] - v[3]) / (v[1] - v[4]))
-FN(g_m2,   v[0] * (v[1] - v[4]) / (v[5] - v[3]))
-static const var_t elas_vars[] = {
+/* ---------- 11. any 1-D collision ---------------------------------- */
+/* One topic for every head-on collision: stick together, elastic, bounce,
+   recoil, explosion. Momentum is always tried first; the bounce number e
+   (1 = elastic, 0 = stick) is only used when momentum alone cannot finish. */
+enum { C_M1, C_V1, C_M2, C_V2, C_V1F, C_V2F, C_E, C_DK, C_DP1, C_DK1 };
+#define CM (v[C_M1] + v[C_M2])
+#define CP (v[C_M1] * v[C_V1] + v[C_M2] * v[C_V2])
+FN(g_v2f, (CP - v[C_M1] * v[C_V1F]) / v[C_M2])
+FN(g_v1f, (CP - v[C_M2] * v[C_V2F]) / v[C_M1])
+FN(g_v1,  (v[C_M1] * v[C_V1F] + v[C_M2] * (v[C_V2F] - v[C_V2])) / v[C_M1])
+FN(g_v2,  (v[C_M2] * v[C_V2F] + v[C_M1] * (v[C_V1F] - v[C_V1])) / v[C_M2])
+FN(g_m1,  v[C_M2] * (v[C_V2F] - v[C_V2]) / (v[C_V1] - v[C_V1F]))
+FN(g_m2,  v[C_M1] * (v[C_V1] - v[C_V1F]) / (v[C_V2F] - v[C_V2]))
+FN(c_v1f, (CP - v[C_M2] * v[C_E] * (v[C_V1] - v[C_V2])) / CM)
+FN(c_v2f, (CP + v[C_M1] * v[C_E] * (v[C_V1] - v[C_V2])) / CM)
+FN(c_r2f, v[C_V1F] + v[C_E] * (v[C_V1] - v[C_V2]))
+FN(c_r1f, v[C_V2F] - v[C_E] * (v[C_V1] - v[C_V2]))
+FN(c_r1,  v[C_V2] + (v[C_V2F] - v[C_V1F]) / v[C_E])
+FN(c_r2,  v[C_V1] - (v[C_V2F] - v[C_V1F]) / v[C_E])
+FN(c_s2f, v[C_E] == 0 ? v[C_V1F] : UNK)      /* stuck together: same velocity */
+FN(c_s1f, v[C_E] == 0 ? v[C_V2F] : UNK)
+FN(c_e,   (v[C_V2F] - v[C_V1F]) / (v[C_V1] - v[C_V2]))
+FN(c_dk,  0.5 * v[C_M1] * (SQ(v[C_V1F]) - SQ(v[C_V1])) + 0.5 * v[C_M2] * (SQ(v[C_V2F]) - SQ(v[C_V2])))
+FN(c_dp1, v[C_M1] * (v[C_V1F] - v[C_V1]))
+FN(c_dk1, 0.5 * v[C_M1] * (SQ(v[C_V1F]) - SQ(v[C_V1])))
+static const var_t coll_vars[] = {
     {"m1",  "kg",  "m1: first object", UNK},
-    {"v1",  "m/s", "v1: its velocity before (left = -)", UNK},
+    {"v1",  "m/s", "v1: m1 before (rest 0, left -)", UNK},
     {"m2",  "kg",  "m2: second object", UNK},
-    {"v2",  "m/s", "v2: its velocity before (rest: 0)", UNK},
-    {"v1f", "m/s", "v1f: velocity of m1 after", UNK},
-    {"v2f", "m/s", "v2f: velocity of m2 after", UNK},
-    {"dp1", "kg m/s", "dp1: momentum change of m1 (m2: -dp1)", UNK},
-    {"dK1", "J",   "dK1: KE change of m1 (m2 gets -dK1)", UNK},
+    {"v2",  "m/s", "v2: m2 before (rest 0, left -)", UNK},
+    {"v1f", "m/s", "v1f: m1 after (bounces back: -)", UNK},
+    {"v2f", "m/s", "v2f: m2 after", UNK},
+    {"e",   "",    "e: 1 elastic, 0 stick, blank ok", UNK},
+    {"dK",  "J",   "dK: KE change (- = lost)", UNK},
+    {"dp1", "kg m/s", "dp1: momentum change of m1", UNK},
+    {"dK1", "J",   "dK1: KE change of m1 (m2: -dK1)", UNK},
 };
 #define G_EQ "m1 v1 + m2 v2 = m1 v1f + m2 v2f"
-#define EL_REL "v1 - v2 = v2f - v1f (elastic)"
-static const rule_t elas_rules[] = {
-    {4, B(0)|B(1)|B(2)|B(3), el_v1f, "v1f = ((m1-m2) v1 + 2 m2 v2)/(m1+m2)", 0},
-    {5, B(0)|B(1)|B(2)|B(3), el_v2f, "v2f = (2 m1 v1 + (m2-m1) v2)/(m1+m2)", 0},
-    {5, B(1)|B(3)|B(4), el_r2f, EL_REL, 0},
-    {4, B(1)|B(3)|B(5), el_r1f, EL_REL, 0},
-    {1, B(3)|B(4)|B(5), el_r1, EL_REL, 0},
-    {3, B(1)|B(4)|B(5), el_r2, EL_REL, 0},
-    {0, B(1)|B(2)|B(3)|B(4)|B(5), g_m1, G_EQ, 0},
-    {2, B(0)|B(1)|B(3)|B(4)|B(5), g_m2, G_EQ, 0},
-    {6, B(0)|B(1)|B(4), el_dp1, "dp1 = m1 (v1f - v1)", 0},
-    {7, B(0)|B(1)|B(4), el_dk1, "dK1 = (1/2) m1 (v1f^2 - v1^2)", 0},
-};
-/* any collision / recoil / explosion: one equation, six slots */
-FN(g_v1,  (v[0] * v[4] + v[2] * v[5] - v[2] * v[3]) / v[0])
-FN(g_v2,  (v[0] * v[4] + v[2] * v[5] - v[0] * v[1]) / v[2])
-FN(g_v1f, (v[0] * v[1] + v[2] * v[3] - v[2] * v[5]) / v[0])
-FN(g_v2f, (v[0] * v[1] + v[2] * v[3] - v[0] * v[4]) / v[2])
-static const var_t gen_vars[] = {
-    {"m1",  "kg",  "m1: first object", UNK},
-    {"v1",  "m/s", "v1: before (at rest: 0, left = -)", UNK},
-    {"m2",  "kg",  "m2: second object", UNK},
-    {"v2",  "m/s", "v2: before (at rest: 0)", UNK},
-    {"v1f", "m/s", "v1f: velocity of m1 after", UNK},
-    {"v2f", "m/s", "v2f: velocity of m2 after", UNK},
-    {"dK",  "J",   "dK: kinetic energy change (- = lost)", UNK},
-};
-FN(g_dk,  0.5 * v[0] * (SQ(v[4]) - SQ(v[1])) + 0.5 * v[2] * (SQ(v[5]) - SQ(v[3])))
-static const rule_t gen_rules[] = {
-    {5, B(0)|B(1)|B(2)|B(3)|B(4), g_v2f, G_EQ, 0},
-    {4, B(0)|B(1)|B(2)|B(3)|B(5), g_v1f, G_EQ, 0},
-    {1, B(0)|B(2)|B(3)|B(4)|B(5), g_v1, G_EQ, 0},
-    {3, B(0)|B(1)|B(2)|B(4)|B(5), g_v2, G_EQ, 0},
-    {0, B(1)|B(2)|B(3)|B(4)|B(5), g_m1, G_EQ, 0},
-    {2, B(0)|B(1)|B(3)|B(4)|B(5), g_m2, G_EQ, 0},
-    {6, B(0)|B(1)|B(2)|B(3)|B(4)|B(5), g_dk, "dK = K after - K before", 0},
+#define E_REL "v2f - v1f = e (v1 - v2)"
+static const rule_t coll_rules[] = {
+    /* momentum first: any 5 of the 6 masses and velocities */
+    {C_V2F, B(C_M1)|B(C_V1)|B(C_M2)|B(C_V2)|B(C_V1F), g_v2f, G_EQ, 0},
+    {C_V1F, B(C_M1)|B(C_V1)|B(C_M2)|B(C_V2)|B(C_V2F), g_v1f, G_EQ, 0},
+    {C_V1,  B(C_M1)|B(C_M2)|B(C_V2)|B(C_V1F)|B(C_V2F), g_v1, G_EQ, 0},
+    {C_V2,  B(C_M1)|B(C_V1)|B(C_M2)|B(C_V1F)|B(C_V2F), g_v2, G_EQ, 0},
+    {C_M1,  B(C_V1)|B(C_M2)|B(C_V2)|B(C_V1F)|B(C_V2F), g_m1, G_EQ, 0},
+    {C_M2,  B(C_M1)|B(C_V1)|B(C_V2)|B(C_V1F)|B(C_V2F), g_m2, G_EQ, 0},
+    /* only 4 known: the bounce number e says how the energy goes */
+    {C_V2F, B(C_E)|B(C_V1F), c_s2f, "stuck together (e = 0): v1f = v2f", 0},
+    {C_V1F, B(C_E)|B(C_V2F), c_s1f, "stuck together (e = 0): v1f = v2f", 0},
+    {C_V1F, B(C_M1)|B(C_V1)|B(C_M2)|B(C_V2)|B(C_E), c_v1f, "v1f = (m1v1+m2v2-m2 e(v1-v2))/(m1+m2)", 0},
+    {C_V2F, B(C_M1)|B(C_V1)|B(C_M2)|B(C_V2)|B(C_E), c_v2f, "v2f = (m1v1+m2v2+m1 e(v1-v2))/(m1+m2)", 0},
+    {C_V2F, B(C_V1)|B(C_V2)|B(C_V1F)|B(C_E), c_r2f, E_REL, 0},
+    {C_V1F, B(C_V1)|B(C_V2)|B(C_V2F)|B(C_E), c_r1f, E_REL, 0},
+    {C_V1,  B(C_V2)|B(C_V1F)|B(C_V2F)|B(C_E), c_r1, E_REL, 0},
+    {C_V2,  B(C_V1)|B(C_V1F)|B(C_V2F)|B(C_E), c_r2, E_REL, 0},
+    /* results */
+    {C_E,   B(C_V1)|B(C_V2)|B(C_V1F)|B(C_V2F), c_e, "e = (v2f - v1f) / (v1 - v2)", 0},
+    {C_DK,  B(C_M1)|B(C_V1)|B(C_M2)|B(C_V2)|B(C_V1F)|B(C_V2F), c_dk, "dK = K after - K before", 0},
+    {C_DP1, B(C_M1)|B(C_V1)|B(C_V1F), c_dp1, "dp1 = m1 (v1f - v1)", 0},
+    {C_DK1, B(C_M1)|B(C_V1)|B(C_V1F), c_dk1, "dK1 = (1/2) m1 (v1f^2 - v1^2)", 0},
 };
 
 /* ---------- 14. impulse -------------------------------------------- */
@@ -994,6 +979,94 @@ static const rule_t com_rules[] = {
     {O_X1,  B(O_M1)|B(O_M2)|B(O_X2)|B(O_XCM), o_x1, "xcm = (m1 x1 + m2 x2)/(m1 + m2)", 0},
     {O_V1,  B(O_M1)|B(O_M2)|B(O_V2)|B(O_VCM), o_v1, "vcm = (m1 v1 + m2 v2)/(m1 + m2)", 0},
     {O_V2,  B(O_M1)|B(O_M2)|B(O_V1)|B(O_VCM), o_v2, "vcm = (m1 v1 + m2 v2)/(m1 + m2)", 0},
+};
+
+/* ---------- center of mass: two balls of the same material --------- */
+/* Same density, so mass goes as size cubed: no masses needed at all.
+   Any length unit works (km in, km out). */
+enum { SD_D1, SD_D2, SD_D, SD_XCM, SD_H1, SD_X2, SD_RAT, SD_R1, SD_R2 };
+FN(sd_d1r,  2 * v[SD_R1])
+FN(sd_d2r,  2 * v[SD_R2])
+FN(sd_r1,   v[SD_D1] / 2)
+FN(sd_r2,   v[SD_D2] / 2)
+FN(sd_rat,  SQ(v[SD_D1] / v[SD_D2]) * (v[SD_D1] / v[SD_D2]))
+FN(sd_xcm,  v[SD_D] / (1 + v[SD_RAT]))
+FN(sd_x2,   v[SD_D] - v[SD_XCM])
+FN(sd_h1,   v[SD_XCM] - v[SD_R1])
+FN(sd_xh,   v[SD_H1] + v[SD_R1])
+FN(sd_xx2,  v[SD_D] - v[SD_X2])
+FN(sd_dd,   v[SD_XCM] * (1 + v[SD_RAT]))
+FN(sd_dx2,  v[SD_XCM] + v[SD_X2])
+FN(sd_ratx, v[SD_D] / v[SD_XCM] - 1)
+FN(sd_d2,   v[SD_RAT] > 0 ? v[SD_D1] / pow(v[SD_RAT], 1.0 / 3) : UNK)
+FN(sd_d1,   v[SD_RAT] > 0 ? v[SD_D2] * pow(v[SD_RAT], 1.0 / 3) : UNK)
+static const var_t sd_vars[] = {
+    {"d1",    "(any)", "d1: diameter of object 1", UNK},
+    {"d2",    "(any)", "d2: diameter of object 2", UNK},
+    {"D",     "(any)", "D: distance, center to center", UNK},
+    {"xcm",   "(any)", "xcm: c.o.m. from center of 1", UNK},
+    {"h1",    "(any)", "h1: c.o.m. above 1's surface", UNK},
+    {"x2",    "(any)", "x2: c.o.m. from center of 2", UNK},
+    {"m1/m2", "",      "m1/m2: mass ratio = (d1/d2)^3", UNK},
+    {"r1",    "(any)", "r1: radius of 1 (if given)", UNK},
+    {"r2",    "(any)", "r2: radius of 2 (if given)", UNK},
+};
+#define SD_EQ "xcm = D m2/(m1+m2) = D/(1 + m1/m2)"
+static const rule_t sd_rules[] = {
+    {SD_D1,  B(SD_R1), sd_d1r, "d1 = 2 r1", 0},
+    {SD_D2,  B(SD_R2), sd_d2r, "d2 = 2 r2", 0},
+    {SD_RAT, B(SD_D1)|B(SD_D2), sd_rat, "same density: m1/m2 = (d1/d2)^3", 0},
+    {SD_XCM, B(SD_D)|B(SD_RAT), sd_xcm, SD_EQ, 0},
+    {SD_R1,  B(SD_D1), sd_r1, "d1 = 2 r1", 0},
+    {SD_R2,  B(SD_D2), sd_r2, "d2 = 2 r2", 0},
+    {SD_X2,  B(SD_D)|B(SD_XCM), sd_x2, "x2 = D - xcm", 0},
+    {SD_H1,  B(SD_XCM)|B(SD_R1), sd_h1, "h1 = xcm - r1", 0},
+    {SD_XCM, B(SD_H1)|B(SD_R1), sd_xh, "h1 = xcm - r1", 0},
+    {SD_XCM, B(SD_D)|B(SD_X2), sd_xx2, "x2 = D - xcm", 0},
+    {SD_D,   B(SD_XCM)|B(SD_RAT), sd_dd, SD_EQ, 0},
+    {SD_D,   B(SD_XCM)|B(SD_X2), sd_dx2, "x2 = D - xcm", 0},
+    {SD_RAT, B(SD_D)|B(SD_XCM), sd_ratx, SD_EQ, 0},
+    {SD_D2,  B(SD_D1)|B(SD_RAT), sd_d2, "same density: m1/m2 = (d1/d2)^3", 0},
+    {SD_D1,  B(SD_D2)|B(SD_RAT), sd_d1, "same density: m1/m2 = (d1/d2)^3", 0},
+};
+
+/* ---------- center of mass: up to 3 objects in x and y ------------- */
+enum { T3_M1, T3_X1, T3_Y1, T3_M2, T3_X2, T3_Y2, T3_M3, T3_X3, T3_Y3, T3_XCM, T3_YCM, T3_M };
+#define T3SX (v[T3_M1] * v[T3_X1] + v[T3_M2] * v[T3_X2])
+#define T3SY (v[T3_M1] * v[T3_Y1] + v[T3_M2] * v[T3_Y2])
+FN(t3_m,   v[T3_M1] + v[T3_M2] + v[T3_M3])
+FN(t3_xcm, (T3SX + v[T3_M3] * v[T3_X3]) / v[T3_M])
+FN(t3_ycm, (T3SY + v[T3_M3] * v[T3_Y3]) / v[T3_M])
+FN(t3_x3,  (v[T3_M] * v[T3_XCM] - T3SX) / v[T3_M3])
+FN(t3_y3,  (v[T3_M] * v[T3_YCM] - T3SY) / v[T3_M3])
+FN(t3_m3,  (v[T3_M1] * (v[T3_X1] - v[T3_XCM]) + v[T3_M2] * (v[T3_X2] - v[T3_XCM])) / (v[T3_XCM] - v[T3_X3]))
+FN(t3_m3y, (v[T3_M1] * (v[T3_Y1] - v[T3_YCM]) + v[T3_M2] * (v[T3_Y2] - v[T3_YCM])) / (v[T3_YCM] - v[T3_Y3]))
+FN(t3_m3m, v[T3_M] - v[T3_M1] - v[T3_M2])
+static const var_t t3_vars[] = {
+    {"m1",  "kg", "m1: first mass", UNK},
+    {"x1",  "m",  "x1: its x (blank = 0)", 0},
+    {"y1",  "m",  "y1: its y (blank = 0)", 0},
+    {"m2",  "kg", "m2: second mass", UNK},
+    {"x2",  "m",  "x2: its x (left of origin: -)", 0},
+    {"y2",  "m",  "y2: its y (below origin: -)", 0},
+    {"m3",  "kg", "m3: third mass (blank = none)", 0},
+    {"x3",  "m",  "x3: its x (blank = 0)", 0},
+    {"y3",  "m",  "y3: its y (blank = 0)", 0},
+    {"xcm", "m",  "xcm: center of mass x", UNK},
+    {"ycm", "m",  "ycm: center of mass y", UNK},
+    {"M",   "kg", "M: total mass", UNK},
+};
+#define T3X_EQ "xcm = (m1x1 + m2x2 + m3x3) / M"
+#define T3Y_EQ "ycm = (m1y1 + m2y2 + m3y3) / M"
+static const rule_t t3_rules[] = {
+    {T3_M,   B(T3_M1)|B(T3_M2)|B(T3_M3), t3_m, "M = m1 + m2 + m3", 0},
+    {T3_XCM, B(T3_M1)|B(T3_X1)|B(T3_M2)|B(T3_X2)|B(T3_M3)|B(T3_X3)|B(T3_M), t3_xcm, T3X_EQ, 0},
+    {T3_YCM, B(T3_M1)|B(T3_Y1)|B(T3_M2)|B(T3_Y2)|B(T3_M3)|B(T3_Y3)|B(T3_M), t3_ycm, T3Y_EQ, 0},
+    {T3_X3,  B(T3_M1)|B(T3_X1)|B(T3_M2)|B(T3_X2)|B(T3_M3)|B(T3_M)|B(T3_XCM), t3_x3, T3X_EQ, 0},
+    {T3_Y3,  B(T3_M1)|B(T3_Y1)|B(T3_M2)|B(T3_Y2)|B(T3_M3)|B(T3_M)|B(T3_YCM), t3_y3, T3Y_EQ, 0},
+    {T3_M3,  B(T3_M1)|B(T3_X1)|B(T3_M2)|B(T3_X2)|B(T3_X3)|B(T3_XCM), t3_m3, T3X_EQ, 0},
+    {T3_M3,  B(T3_M1)|B(T3_Y1)|B(T3_M2)|B(T3_Y2)|B(T3_Y3)|B(T3_YCM), t3_m3y, T3Y_EQ, 0},
+    {T3_M3,  B(T3_M)|B(T3_M1)|B(T3_M2), t3_m3m, "M = m1 + m2 + m3", 0},
 };
 
 /* ---------- rocket thrust ------------------------------------------ */
@@ -1953,25 +2026,19 @@ static const topic_t topics[] = {
 #endif
 #if PART == 0 || PART == 2
     /* Momentum */
-    TOPIC("Collision: stick together", stick_vars, stick_rules,
-        "at rest / stationary: v = 0\nmoving left / west: negative v\n"
-        "lock together, stick, embed, catch,\ndropped onto a moving cart: here\n"
-        "dropped straight down: its v = 0\n4.2 g bullet: m = 4.2E-3\n"
+    TOPIC("Collision (any 1-D)", coll_vars, coll_rules,
+        "EVERY head-on collision is here.\n"
+        "right = +, left = -   at rest: 0\n"
+        "LEFT/RIGHT arrow = sign of value\n"
+        "sticks, embeds, couples: e = 0\n"
+        "elastic, no KE lost: e = 1\n"
+        "not told how it bounces: e blank\n"
+        "bounces back: negative after\n"
+        "recoil, explosion, push off:\n  both start at rest: v1 = v2 = 0\n"
+        "4.2 g bullet: m = 4.2E-3\n"
         "weighs 625 N: m = 625/9.8 = 63.8\n"
-        "spring bumpers, max energy stored:\n  it is -dK, at speed vf"),
-    TOPIC("Collision: elastic", elas_vars, elas_rules,
-        "elastic / bounce with no energy\nlost: use this one\n"
-        "at rest: v = 0\nmoving left: negative v\n"
-        "head-on = 1-D, signs matter\n"
-        "masses as a ratio (deuteron =\n  2 x neutron): type 1 and 2\n"
-        "speed as a fraction: type v1 = 1\n"
-        "unknown mass: enter both speeds\n  of m1, leave m2 blank"),
-    TOPIC("Recoil / any collision", gen_vars, gen_rules,
-        "Fill in 5 of the 6, get the 6th.\nthrow, push off, recoil, expel:\n"
-        "  both start at rest: v1 = v2 = 0\nbounces back: negative after\n"
-        "east / right = +, west / left = -\ndK shows energy lost or created\n"
-        "weighs 625 N: m = 625/9.8 = 63.8\nexpels 1.65 kg: m1 = what is left\n"
-        "fired at an angle on ice: use\n  v cos(angle) for its v"),
+        "spring bumpers, max energy\n  stored: -dK with e = 0\n"
+        "e > 1: energy was added (boom)"),
     TOPIC("Impulse", imp_vars, imp_rules,
         "starts at rest: v1 = 0\nbounces back: v2 is negative\n"
         "brought to rest: v2 = 0\nin contact 2.4 ms: t = 2.4E-3\n"
@@ -1996,8 +2063,24 @@ static const topic_t topics[] = {
     TOPIC("Center of mass", com_vars, com_rules,
         "Put one object at 0 (x1 blank).\n40 m ahead: x2 = 40\n"
         "stacked: use heights of centers\n"
-        "same density, sizes given:\n  use m = diameter^3\n"
+        "same material, only sizes given:\n  use C.o.m. same density\n"
         "Sun 1.99E30, Jupiter 1.90E27,\n  apart 7.78E11"),
+    TOPIC("C.o.m. same density", sd_vars, sd_rules,
+        "Same material / same density,\n"
+        "  only sizes given: this one.\n"
+        "No masses needed. Type d1, d2, D.\n"
+        "radii given: type r1, r2 instead\n"
+        "any length unit (km ok); answers\n  come out in that same unit\n"
+        "h1 > 0: c.o.m. is OUTSIDE obj 1\n"
+        "Pluto 2370, Charon 1250, D 19700"),
+    TOPIC("C.o.m. 3 objects (x,y)", t3_vars, t3_rules,
+        "Pick an origin; put object 1\n  there if you can (x1=y1=0).\n"
+        "left of origin: -x  below: -y\n"
+        "blank x or y = 0, blank m3 = none\n"
+        "rod or plate: use its center\n"
+        "on a line only: leave all y blank\n"
+        "where must m3 go? type xcm, ycm\n  (wanted spot), read x3, y3\n"
+        "cm given: 30 cm = 0.30"),
     TOPIC("Rocket thrust", rock_vars, rock_rules,
         "burns 0.054 kg each second: R\ngas speed relative to rocket: vex\n"
         "astronaut + pack: m = both masses\ngas used in 5 s: t = 5, read dm"),
@@ -2408,6 +2491,10 @@ static uint16_t easiest_missing(uint8_t i) {
         uint16_t miss = (uint16_t)(tp->rules[r].need & ~k);
         uint8_t n = bits(miss);
         if (tp->rules[r].target == i && n && n < bestn) { bestn = n; best = miss; }
+#if PART == 0 || PART == 2
+        /* collision with only the "before" side known: the thing to ask for is e */
+        else if (tp->vars == coll_vars && tp->rules[r].target == i && miss == B(C_E) && n == bestn) best = miss;
+#endif
     }
     return best;
 }
@@ -2482,11 +2569,22 @@ static const char *situation_note(void) {
     }
 #endif
 #if PART == 0 || PART == 2
-    if (tp->vars == stick_vars) {
-        if (KN(5) && val[5] > 1e-6) return "dK > 0 cannot happen: check signs";
-    } else if (tp->vars == gen_vars) {
-        if (KN(6)) return val[6] > 1e-6 ? "KE went up: push-off or explosion"
-                        : val[6] < -1e-6 ? "KE was lost: not an elastic collision" : "KE unchanged: elastic";
+    if (tp->vars == coll_vars) {
+        if (KN(C_E) && st[C_E] != S_USER) {
+            double e = val[C_E];
+            if (e < -1e-3) return "e < 0: they pass through? check signs";
+            if (e < 1e-3)  return "e = 0: they stick (most KE lost)";
+            if (e < 0.995) return "0 < e < 1: inelastic, some KE lost";
+            if (e < 1.005) return "e = 1: elastic, no KE lost";
+            return "e > 1: KE added (explosion, spring)";
+        }
+        if (KN(C_DK) && st[C_E] == S_USER && val[C_E] == 0 && val[C_DK] > 1e-6)
+            return "dK > 0 cannot happen: check signs";
+        if (KN(C_DK)) return val[C_DK] > 1e-6 ? "KE went up: push-off or explosion"
+                        : val[C_DK] < -1e-6 ? "KE was lost: not elastic" : "KE unchanged: elastic";
+    } else if (tp->vars == sd_vars) {
+        if (KN(SD_H1)) return val[SD_H1] > 0 ? "c.o.m. is OUTSIDE object 1"
+                                             : "c.o.m. is inside object 1";
     } else if (tp->vars == col2_vars) {
         if (KN(T_DK) && val[T_DK] > 1e-6) return "dK > 0: check speeds and angles";
     }
@@ -2531,6 +2629,175 @@ static void build_steps(uint8_t target) {
         tput("\nCheck signs and what you typed.\n");
     }
 }
+
+/* ================================================================== */
+/* "Help me pick": a few yes/no questions -> the right topic, then the   */
+/* boxes to fill one at a time, each with what to look for in the words  */
+/* ================================================================== */
+#if PART == 0 || PART == 2
+#define HAVE_WIZ 1
+typedef struct { uint8_t var; const char *ask; const char *look; } wstep_t;
+typedef struct {
+    const var_t *vars;      /* which topic */
+    const char *pre;        /* values the answers already told us, "e=0 v1=0" */
+    uint8_t answer;         /* box that holds the answer, or WANY = first solved one */
+    const char *done;       /* shown under the answer */
+    const wstep_t *steps;
+    uint8_t nsteps;
+} wplan_t;
+typedef struct { const char *label; int8_t go; } wopt_t;   /* go >= 0: next question, < 0: a plan */
+typedef struct { const char *q; const char *hint; uint8_t nopt; wopt_t opt[3]; } wq_t;
+#define WANY 0xFF
+#define WSTEPS(a) a, N(a)
+#define GO(p) ((int8_t)(-1 - (p)))
+
+#define LK_KG   "kg   grams: 300 g = .3"
+#define LK_XL   "left of the origin: press LEFT"
+#define LK_YB   "below the origin: press LEFT"
+static const wstep_t ws_com_line[] = {
+    {O_M1, "Mass of object 1 (it sits at 0)", LK_KG},
+    {O_M2, "Mass of object 2", LK_KG},
+    {O_X2, "Distance between them", "any unit (km ok); answer uses it"},
+    {O_V1, "Velocity of object 1? none: ENTER", "m/s   moving left: press LEFT"},
+    {O_V2, "Velocity of object 2? none: ENTER", "m/s   moving left: press LEFT"},
+};
+static const wstep_t ws_t3_xy[] = {
+    {T3_M1, "Mass 1", LK_KG},
+    {T3_X1, "x of mass 1 (0 or none: ENTER)", LK_XL},
+    {T3_Y1, "y of mass 1 (0 or none: ENTER)", LK_YB},
+    {T3_M2, "Mass 2", LK_KG},
+    {T3_X2, "x of mass 2 (0 or none: ENTER)", LK_XL},
+    {T3_Y2, "y of mass 2 (0 or none: ENTER)", LK_YB},
+    {T3_M3, "Mass 3", LK_KG},
+    {T3_X3, "x of mass 3 (0 or none: ENTER)", LK_XL},
+    {T3_Y3, "y of mass 3 (0 or none: ENTER)", LK_YB},
+};
+static const wstep_t ws_t3_line[] = {
+    {T3_M1, "Mass 1", LK_KG},
+    {T3_X1, "Where is mass 1? (0: ENTER)", LK_XL},
+    {T3_M2, "Mass 2", LK_KG},
+    {T3_X2, "Where is mass 2?", LK_XL},
+    {T3_M3, "Mass 3", LK_KG},
+    {T3_X3, "Where is mass 3?", LK_XL},
+};
+static const wstep_t ws_sd_d[] = {
+    {SD_D1, "Diameter of object 1 (planet)", "any unit, the SAME for all three"},
+    {SD_D2, "Diameter of object 2 (moon)", "same unit as the first one"},
+    {SD_D,  "Distance between their centers", "words: apart, center to center"},
+};
+static const wstep_t ws_sd_r[] = {
+    {SD_R1, "Radius of object 1 (planet)", "any unit, the SAME for all three"},
+    {SD_R2, "Radius of object 2 (moon)", "same unit as the first one"},
+    {SD_D,  "Distance between their centers", "words: apart, center to center"},
+};
+#define LK_M    "kg (5 g = .005)   asked: ENTER"
+#define LK_VB   "rest: 0  left: LEFT  asked: ENTER"
+#define LK_VA   "bounced back: LEFT  asked: ENTER"
+static const wstep_t ws_coll[] = {
+    {C_M1,  "Mass of object 1", LK_M},
+    {C_V1,  "Its velocity BEFORE", LK_VB},
+    {C_M2,  "Mass of object 2", LK_M},
+    {C_V2,  "Its velocity BEFORE", LK_VB},
+    {C_V1F, "Velocity of object 1 AFTER", LK_VA},
+    {C_V2F, "Velocity of object 2 AFTER", LK_VA},
+};
+static const wstep_t ws_stick[] = {
+    {C_M1,  "Mass of object 1", LK_M},
+    {C_V1,  "Its velocity BEFORE", LK_VB},
+    {C_M2,  "Mass of object 2", LK_M},
+    {C_V2,  "Its velocity BEFORE", LK_VB},
+    {C_V1F, "Velocity AFTER (moving together)", "asked for it: just press ENTER"},
+};
+static const wstep_t ws_recoil[] = {
+    {C_M1,  "Mass of object 1 (person, gun)", LK_M},
+    {C_M2,  "Mass of object 2 (ball, bullet)", LK_M},
+    {C_V1F, "Velocity of object 1 AFTER", "backward: LEFT   asked: ENTER"},
+    {C_V2F, "Velocity of object 2 AFTER", "backward: LEFT   asked: ENTER"},
+};
+enum { WP_COM_LINE, WP_T3_2XY, WP_T3_LINE, WP_T3_XY, WP_SD_D, WP_SD_R,
+       WP_STICK, WP_ELASTIC, WP_BOUNCE, WP_RECOIL };
+#define D_COLOR "the answer is the colored box"
+static const wplan_t wplans[] = {
+    {com_vars,  NULL, O_XCM,  "xcm = how far it is from object 1", WSTEPS(ws_com_line)},
+    {t3_vars,   NULL, T3_XCM, "xcm and ycm (DOWN shows ycm)", ws_t3_xy, 6},
+    {t3_vars,   NULL, T3_XCM, "xcm, measured from your 0 point", WSTEPS(ws_t3_line)},
+    {t3_vars,   NULL, T3_XCM, "xcm and ycm (DOWN shows ycm)", WSTEPS(ws_t3_xy)},
+    {sd_vars,   NULL, SD_XCM, "from the CENTER of object 1", WSTEPS(ws_sd_d)},
+    {sd_vars,   NULL, SD_XCM, "from the CENTER of object 1", WSTEPS(ws_sd_r)},
+    {coll_vars, "e=0", WANY, D_COLOR, WSTEPS(ws_stick)},
+    {coll_vars, "e=1", WANY, D_COLOR, WSTEPS(ws_coll)},
+    {coll_vars, NULL,  WANY, D_COLOR, WSTEPS(ws_coll)},
+    {coll_vars, "v1=0 v2=0", WANY, D_COLOR, WSTEPS(ws_recoil)},
+};
+static const wq_t wqs[] = {
+    /* 0 */ {"What is the problem about?", "pick the closest match", 3,
+             {{"Center of mass", 1}, {"Collision / crash (head-on)", 6}, {"Recoil, explosion, push off", GO(WP_RECOIL)}}},
+    /* 1 */ {"Does it give MASSES?", "look for kg, g, or 'weighs ... N'", 2,
+             {{"Yes, it gives masses", 2}, {"No, only sizes (diameter/radius)", 5}}},
+    /* 2 */ {"How many objects?", "count every thing that has a mass", 2,
+             {{"2 objects", 3}, {"3 objects", 4}}},
+    /* 3 */ {"Where are the 2 objects?", "how does it give their positions?", 2,
+             {{"A distance apart (in a line)", GO(WP_COM_LINE)}, {"At (x, y) points", GO(WP_T3_2XY)}}},
+    /* 4 */ {"Where are the 3 objects?", "how does it give their positions?", 2,
+             {{"All in a line (just x)", GO(WP_T3_LINE)}, {"At (x, y) points", GO(WP_T3_XY)}}},
+    /* 5 */ {"The sizes are given as a...", "'across' means diameter", 2,
+             {{"Diameter", GO(WP_SD_D)}, {"Radius", GO(WP_SD_R)}}},
+    /* 6 */ {"Do they STICK together after?", "stick, embed, lock, couple = yes", 2,
+             {{"Yes, they move together", GO(WP_STICK)}, {"No, they bounce apart", 7}}},
+    /* 7 */ {"Does it say ELASTIC?", "elastic = no kinetic energy lost", 2,
+             {{"Yes, it says elastic", GO(WP_ELASTIC)}, {"No / not said", GO(WP_BOUNCE)}}},
+};
+
+static const wplan_t *guide;    /* walking through a plan's boxes, or NULL */
+static uint8_t gstep;
+static int wiz_topic(const wplan_t *p) {
+    for (unsigned i = 0; i < NUM_TOPICS; i++) if (topics[i].vars == p->vars) return (int)i;
+    return -1;
+}
+/* "e=0 v1=0": copy each value into its box */
+static void wiz_preset(const char *s) {
+    while (s && *s) {
+        char sym[8];
+        uint8_t n = 0, i;
+        while (*s == ' ') s++;
+        while (*s && *s != '=' && n < sizeof sym - 1) sym[n++] = *s++;
+        sym[n] = 0;
+        if (*s++ != '=') return;
+        for (i = 0; i < tp->nvars && strcmp(tp->vars[i].sym, sym); i++) {}
+        n = 0;
+        while (*s && *s != ' ') { if (i < tp->nvars && n < VAL_LEN) txt[i][n++] = *s; s++; }
+        if (i < tp->nvars) txt[i][n] = 0;
+    }
+}
+/* a box the numbers already filled in needs no typing */
+static void wiz_skip(void) {
+    while (gstep < guide->nsteps && st[guide->steps[gstep].var] == S_SOLVED) gstep++;
+}
+static bool wiz_begin(const wplan_t *p) {
+    int t = wiz_topic(p);
+    if (t < 0) return false;
+    tp = &topics[t];
+    memset(txt, 0, sizeof txt);
+    wiz_preset(p->pre);
+    solve();
+    guide = p;
+    gstep = 0;
+    wiz_skip();
+    return true;
+}
+/* the current box is done (typed or left blank): true when every box is done */
+static bool wiz_next(void) {
+    solve();
+    if (gstep < guide->nsteps) gstep++;
+    wiz_skip();
+    return gstep >= guide->nsteps;
+}
+static uint8_t wiz_answer(const wplan_t *p) {
+    if (p->answer != WANY) return p->answer;
+    for (uint8_t i = 0; i < tp->nvars; i++) if (st[i] == S_SOLVED) return i;
+    return p->steps[0].var;
+}
+#endif
 
 /* ================================================================== */
 #ifdef HOST_TEST
@@ -2616,6 +2883,79 @@ static int list_topics(void) {
     return 0;
 }
 
+/* "Help me pick": the question tree is sound and every path gives the answer */
+static void wiz_len(const char *what, const char *t, size_t max) {
+    if (t && strlen(t) > max) { fails++; printf("WIZ TEXT too long (%u > %u) %s: %s\n", (unsigned)strlen(t), (unsigned)max, what, t); }
+}
+static void wiz_walk(int plan, const char *inputs, const char *sym, double want) {
+    const wplan_t *p = &wplans[plan];
+    char buf[200], *tok;
+    uint8_t a;
+    strncpy(buf, inputs, sizeof buf - 1); buf[sizeof buf - 1] = 0;
+    tok = strtok(buf, ",");
+    if (!wiz_begin(p)) { fails++; printf("WIZ plan %d: no topic\n", plan); return; }
+    while (gstep < guide->nsteps) {
+        if (!tok) { fails++; printf("WIZ plan %d: ran out of inputs at box %s\n", plan, tp->vars[guide->steps[gstep].var].sym); return; }
+        if (strcmp(tok, "_")) strncpy(txt[guide->steps[gstep].var], tok, VAL_LEN);
+        tok = strtok(NULL, ",");
+        if (wiz_next()) break;
+    }
+    if (tok) { fails++; printf("WIZ plan %d: input '%s' left over (box was skipped?)\n", plan, tok); }
+    a = wiz_answer(p);
+    if (strcmp(tp->vars[a].sym, sym) || st[a] != S_SOLVED || fabs(val[a] - want) > 2e-3 * fabs(want) + 1e-9) {
+        fails++; printf("WIZ plan %d: answer %s = %g (state %d), want %s = %g\n", plan, tp->vars[a].sym, val[a], st[a], sym, want);
+    }
+    if (conflict >= 0) { fails++; printf("WIZ plan %d: numbers disagree: %s\n", plan, tp->rules[conflict].eq); }
+    guide = NULL;
+}
+static void wiz_tests(void) {
+    bool reach[N(wplans)] = { false }, seen[N(wqs)] = { false };
+    uint8_t todo[N(wqs)], nt = 0;
+    todo[nt++] = 0; seen[0] = true;
+    while (nt) {                         /* walk every branch from the first question */
+        const wq_t *q = &wqs[todo[--nt]];
+        wiz_len("question", q->q, 38); wiz_len("hint", q->hint, 38);
+        if (q->nopt < 2 || q->nopt > 3) { fails++; printf("WIZ question with %d options\n", q->nopt); }
+        for (uint8_t o = 0; o < q->nopt; o++) {
+            int8_t go = q->opt[o].go;
+            wiz_len("option", q->opt[o].label, 34);
+            if (go >= 0) {
+                if (go >= (int8_t)N(wqs)) { fails++; printf("WIZ bad question %d\n", go); continue; }
+                if (!seen[go]) { seen[go] = true; todo[nt++] = (uint8_t)go; }
+            } else if (-1 - go >= (int)N(wplans)) { fails++; printf("WIZ bad plan %d\n", -1 - go); }
+            else reach[-1 - go] = true;
+        }
+    }
+    for (unsigned i = 0; i < N(wqs); i++) if (!seen[i]) { fails++; printf("WIZ question %u cannot be reached\n", i); }
+    for (unsigned pl = 0; pl < N(wplans); pl++) {
+        const wplan_t *p = &wplans[pl];
+        int t = wiz_topic(p);
+        if (!reach[pl]) { fails++; printf("WIZ plan %u cannot be reached\n", pl); }
+        if (t < 0) { fails++; printf("WIZ plan %u: topic missing\n", pl); continue; }
+        wiz_len("done", p->done, 38);
+        if (p->answer != WANY && p->answer >= topics[t].nvars) { fails++; printf("WIZ plan %u: bad answer box\n", pl); }
+        for (uint8_t k = 0; k < p->nsteps; k++) {
+            wiz_len("ask", p->steps[k].ask, 34); wiz_len("look", p->steps[k].look, 38);
+            if (p->steps[k].var >= topics[t].nvars) { fails++; printf("WIZ plan %u: bad box %d\n", pl, p->steps[k].var); }
+        }
+    }
+    /* "_" = box left blank (just ENTER) */
+    wiz_walk(WP_SD_D,     "2370,1250,19700", "xcm", 2520.5);              /* Pluto and Charon */
+    wiz_walk(WP_SD_R,     "1185,625,19700", "xcm", 2520.5);
+    wiz_walk(WP_BOUNCE,   ".245,_,.36,0,-.118,.66", "v1", 0.8518);        /* air-table pucks */
+    wiz_walk(WP_BOUNCE,   "1800,1.6,1450,-1.1,.27", "v2f", 0.5510);       /* bumper cars: v2f fills itself */
+    wiz_walk(WP_STICK,    ".005,_,2,0,1.5", "v1", 601.5);                 /* bullet in a block */
+    wiz_walk(WP_STICK,    "1500,20,1000,0", "v1f", 12);                   /* answer appears, last box skipped */
+    wiz_walk(WP_ELASTIC,  "6,7,10.5,0", "v1f", -1.909);                   /* 8.47b */
+    wiz_walk(WP_ELASTIC,  "1,3.6E7,_,0,-3.3E7", "m2", 23);                /* 8.50: unknown mass */
+    wiz_walk(WP_RECOIL,   "4,.01,_,300", "v1f", -0.75);                   /* rifle recoil */
+    wiz_walk(WP_COM_LINE, "1200,1800,40,12,20", "xcm", 24);               /* 8.54 */
+    wiz_walk(WP_COM_LINE, "1.99E30,1.9E27,7.78E11,_,_", "xcm", 7.421E8);  /* Sun and Jupiter */
+    wiz_walk(WP_T3_XY,    ".3,.2,.3,.4,.1,-.4,.2,-.3,.6", "xcm", 0.04444); /* 3 chocolate blocks */
+    wiz_walk(WP_T3_2XY,   "2,_,_,3,4,_", "xcm", 2.4);
+    wiz_walk(WP_T3_LINE,  "1,_,1,2,2,4", "xcm", 2.5);
+}
+
 int main(int argc, char **argv) {
     char b[32];
     if (argc > 1 && !strcmp(argv[1], "--solve")) return solve_lines();
@@ -2643,9 +2983,12 @@ int main(int argc, char **argv) {
     full("Table + hanging mass", "m1=4 m2=3 mu_k=0.3");
     full("Work and power", "F=50 d=8 phi=25 t=4");
     full("Energy conservation", "m=2 v1=3 h1=5 h2=1 W=-12 x1=0.2 x2=0.05 k=400");
-    full("Collision: stick together", "m1=2 v1=5 m2=3 v2=-1");
-    full("Collision: elastic", "m1=2 v1=5 m2=3 v2=-1");
-    full("Recoil / any collision", "m1=2 v1=5 m2=3 v2=-1 v1f=-0.5");
+    full("Collision (any 1-D)", "m1=2 v1=5 m2=3 v2=-1 e=0");
+    full("Collision (any 1-D)", "m1=2 v1=5 m2=3 v2=-1 e=1");
+    full("Collision (any 1-D)", "m1=2 v1=5 m2=3 v2=-1 e=0.4");
+    full("Collision (any 1-D)", "m1=2 v1=5 m2=3 v2=-1 v1f=-0.5");
+    full("C.o.m. same density", "d1=3 d2=1 D=10");
+    full("C.o.m. 3 objects (x,y)", "m1=1 x1=1 y1=2 m2=2 x2=-1 y2=3 m3=3 x3=2 y3=-1");
     full("Impulse", "m=0.5 h_drop=2 h_up=1.2 t=0.004");
     full("Momentum and KE", "m=3 v=4");
     full("Impulse in 2-D", "m=0.2 v1=10 a1=20 v2=14 a2=160 t=0.01");
@@ -2690,12 +3033,12 @@ int main(int argc, char **argv) {
     check("Energy conservation", "m=2 k=1800 v1=3 h1=0 v2=0 h2=0 | x2=0.1");                /* how far it compresses */
     check("Energy conservation", "m=0.5 k=200 v1=0 h1=0 v2=2 h2=0 x2=0 | x1=0.1");          /* how far was it pulled back */
     check("Energy conservation", "v1=0 h1=20 v2=19.799 h2=0 | W=0");
-    check("Collision: stick together", "m1=1500 v1=20 m2=1000 v2=0 | vf=12 dK=-120000");
-    check("Collision: stick together", "m1=0.005 m2=2 v2=0 vf=1.5 | v1=601.5");             /* bullet in block */
-    check("Collision: elastic", "m1=2 v1=3 m2=1 v2=0 | v1f=1 v2f=4");
-    check("Collision: elastic", "m1=1 v1=4 m2=1 v2=-2 | v1f=-2 v2f=4");
-    check("Recoil / any collision", "m1=4 v1=0 m2=0.01 v2=0 v2f=300 | v1f=-0.75");          /* rifle recoil */
-    check("Recoil / any collision", "m1=0.2 v1=10 m2=0.3 v2=0 v1f=-2 | v2f=8");
+    check("Collision (any 1-D)", "m1=1500 v1=20 m2=1000 v2=0 e=0 | v1f=12 v2f=12 dK=-120000");
+    check("Collision (any 1-D)", "m1=0.005 m2=2 v2=0 v1f=1.5 e=0 | v1=601.5");             /* bullet in block */
+    check("Collision (any 1-D)", "m1=2 v1=3 m2=1 v2=0 e=1 | v1f=1 v2f=4");
+    check("Collision (any 1-D)", "m1=1 v1=4 m2=1 v2=-2 e=1 | v1f=-2 v2f=4");
+    check("Collision (any 1-D)", "m1=4 v1=0 m2=0.01 v2=0 v2f=300 | v1f=-0.75");          /* rifle recoil */
+    check("Collision (any 1-D)", "m1=0.2 v1=10 m2=0.3 v2=0 v1f=-2 | v2f=8");
     check("Impulse", "m=0.145 v1=-40 v2=50 t=0.002 | J=13.05 F=6525");
     check("Impulse", "m=0.06 v1=0 F=300 t=0.005 | v2=25");
     check("Rotational motion", "w0=0 alpha=2 t=5 | w=10 dth=25");
@@ -2718,39 +3061,51 @@ int main(int argc, char **argv) {
     check("Impulse", "m=2.00 v1=6.00 J=-2.50 | v2=4.75");                                   /* 8.13 left */
     check("Momentum and KE", "m=40.0 v=20.0 | p=800 K=8000");                               /* 8.15ab */
     check("Impulse", "m=40.0 v1=20.0 v2=0 t=5.00 | F=-160");                                /* 8.15c */
-    check("Recoil / any collision", "m1=65.5 v1=0 m2=2.50 v2=0 v2f=3.10 | v1f=-0.1183");    /* 8.16 */
-    check("Recoil / any collision", "m1=63.78 v1=0 m2=73.98 v2=0 v2f=1.50 | v1f=-1.740 dK=179.8"); /* 8.18 */
-    check("Recoil / any collision", "m1=5.85 v1=0 m2=1.65 v2=0 v1f=2.70 | v2f=-9.573 dK=96.9");    /* 8.19 */
-    check("Collision: stick together", "m1=0.400 v1=10.0 m2=70.0 v2=0 | vf=0.05682");       /* 8.20a */
-    check("Recoil / any collision", "m1=0.400 v1=10.0 m2=70.0 v2=0 v1f=-7.0 | v2f=0.09714"); /* 8.20b */
-    check("Recoil / any collision", "m1=0.245 m2=0.360 v2=0 v1f=-0.118 v2f=0.660 | v1=0.8518 dK=-0.00877"); /* 8.21 */
-    check("Recoil / any collision", "m1=1800 v1=1.60 m2=1450 v2=-1.10 v1f=0.270 | v2f=0.5510 dK=-2895.5"); /* 8.22 */
+    check("Collision (any 1-D)", "m1=65.5 v1=0 m2=2.50 v2=0 v2f=3.10 | v1f=-0.1183");    /* 8.16 */
+    check("Collision (any 1-D)", "m1=63.78 v1=0 m2=73.98 v2=0 v2f=1.50 | v1f=-1.740 dK=179.8"); /* 8.18 */
+    check("Collision (any 1-D)", "m1=5.85 v1=0 m2=1.65 v2=0 v1f=2.70 | v2f=-9.573 dK=96.9");    /* 8.19 */
+    check("Collision (any 1-D)", "m1=0.400 v1=10.0 m2=70.0 v2=0 e=0 | v1f=0.05682 v2f=0.05682");       /* 8.20a */
+    check("Collision (any 1-D)", "m1=0.400 v1=10.0 m2=70.0 v2=0 v1f=-7.0 | v2f=0.09714"); /* 8.20b */
+    check("Collision (any 1-D)", "m1=0.245 m2=0.360 v2=0 v1f=-0.118 v2f=0.660 | v1=0.8518 dK=-0.00877"); /* 8.21 */
+    check("Collision (any 1-D)", "m1=1800 v1=1.60 m2=1450 v2=-1.10 v1f=0.270 | v2f=0.5510 dK=-2895.5"); /* 8.22 */
     check("Spring between 2 blocks", "m1=1.60 m2=1.60 k=185 x=0.200 | U=3.7 v1=1.521 v2=1.521");  /* 8.23 */
     check("Spring between 2 blocks", "m1=1.00 m2=3.00 v2=1.10 | v1=3.3 U=7.26");            /* 8.24 */
-    check("Recoil / any collision", "m1=69.5 v1=0 m2=4.20E-3 v2=0 v2f=975 | v1f=-0.05892"); /* 8.25a */
+    check("Collision (any 1-D)", "m1=69.5 v1=0 m2=4.20E-3 v2=0 v2f=975 | v1f=-0.05892"); /* 8.25a */
     check("Collision in 2-D", "m1=45.0 v1=14.0 m2=70.0 v1f=8.00 b1=55.1 | v2f=7.381 b2=-34.86 dK=-1063"); /* 8.27 */
-    check("Collision: stick together", "m1=60 v1=4.5 m2=2.5 v2=0 | vf=4.32");               /* 8.29a */
+    check("Collision (any 1-D)", "m1=60 v1=4.5 m2=2.5 v2=0 e=0 | v1f=4.32 v2f=4.32");               /* 8.29a */
     check("Collision in 2-D", "m1=1 v1=40.0 m2=1 b1=30.0 b2=-45.0 | v1f=29.28 v2f=20.71 dK=-156.9"); /* 8.30 */
-    check("Recoil / any collision", "m1=4.00 v1=2.00 m2=6.00 v2=-2.50 v2f=0.50 | v1f=-2.5 dK=-13.5"); /* 8.35 */
-    check("Collision: stick together", "m1=1050 v1=-13.0 m2=6320 v2=11.0 | vf=7.581");      /* 8.36 */
+    check("Collision (any 1-D)", "m1=4.00 v1=2.00 m2=6.00 v2=-2.50 v2f=0.50 | v1f=-2.5 dK=-13.5"); /* 8.35 */
+    check("Collision (any 1-D)", "m1=1050 v1=-13.0 m2=6320 v2=11.0 e=0 | v1f=7.581 v2f=7.581");      /* 8.36 */
     check("Stick together in 2-D", "m1=75 v1=7.2 m2=90 v2=8.8 a2=90 | vf=5.810 af=55.71");  /* 8.37 */
     check("Stick together in 2-D", "m1=1900 m2=1500 v2=16 a2=-90 af=-60 | v1=7.293 vf=8.151"); /* 8.38 */
 
-    check("Collision: stick together", "m1=20.0 v1=7.5 m2=4.40 v2=0 | vf=6.148");          /* fish eats fish */
+    check("Collision (any 1-D)", "m1=20.0 v1=7.5 m2=4.40 v2=0 e=0 | v1f=6.148 v2f=6.148");          /* fish eats fish */
     check("Stick, then what happens", "m1=5.00E-3 m2=1.20 mu_k=0.20 d=0.310 | vf=1.1024 v1=265.7");   /* 8.42 */
     check("Stick, then what happens", "m1=12.0E-3 v1=380 m2=9.00 | h=0.013063 K1=866.4 Kf=1.1537");  /* 8.43 */
-    check("Recoil / any collision", "m1=3.00 v1=8.00 m2=15.0 v2=0 v1f=-2.00 | v2f=2");      /* 8.44 step 1 */
+    check("Collision (any 1-D)", "m1=3.00 v1=8.00 m2=15.0 v2=0 v1f=-2.00 | v2f=2");      /* 8.44 step 1 */
     check("Energy conservation", "m=15.0 v1=2 h1=0 v2=0 h2=0 k=575 | x2=0.3230");           /* 8.44 step 2 */
     check("Stick, then what happens", "m1=3.00 v1=14.0 m2=4.00 L=1.40 | vf=6 T=248.6");     /* 8.45 */
-    check("Collision: elastic", "m1=0.160 v1=0.90 m2=0.291 v2=-2.27 | v1f=-3.191 v2f=-0.02078"); /* 8.46 */
-    check("Collision: stick together", "m1=6.00 v1=7.00 m2=10.50 v2=0 | vf=2.545 dK=-93.55"); /* 8.47a */
-    check("Collision: elastic", "m1=6.00 v1=7.00 m2=10.50 v2=0 | v1f=-1.909 v2f=5.091");    /* 8.47b */
-    check("Collision: elastic", "m1=0.0100 v1=-0.400 m2=0.0300 v2=0.200 | v1f=0.5 v2f=-0.1 dp1=0.009 dK1=4.5E-4"); /* 8.48 */
-    check("Collision: elastic", "m1=1 v1=1 m2=2 v2=0 | v1f=-0.3333");                       /* 8.49a */
-    check("Collision: elastic", "m1=1 v1=3.60E7 v2=0 v1f=-3.30E7 | m2=23 v2f=3.0E6");       /* 8.50 */
-    check("Collision: elastic", "m2=1 v1=6.0 v2=0 v2f=3.0 | m1=0.3333 v1f=-3");             /* 8.51 */
+    check("Collision (any 1-D)", "m1=0.160 v1=0.90 m2=0.291 v2=-2.27 e=1 | v1f=-3.191 v2f=-0.02078"); /* 8.46 */
+    check("Collision (any 1-D)", "m1=6.00 v1=7.00 m2=10.50 v2=0 e=0 | v1f=2.545 v2f=2.545 dK=-93.55"); /* 8.47a */
+    check("Collision (any 1-D)", "m1=6.00 v1=7.00 m2=10.50 v2=0 e=1 | v1f=-1.909 v2f=5.091");    /* 8.47b */
+    check("Collision (any 1-D)", "m1=0.0100 v1=-0.400 m2=0.0300 v2=0.200 e=1 | v1f=0.5 v2f=-0.1 dp1=0.009 dK1=4.5E-4"); /* 8.48 */
+    check("Collision (any 1-D)", "m1=1 v1=1 m2=2 v2=0 e=1 | v1f=-0.3333");                       /* 8.49a */
+    check("Collision (any 1-D)", "m1=1 v1=3.60E7 v2=0 v1f=-3.30E7 e=1 | m2=23 v2f=3.0E6");       /* 8.50 */
+    check("Collision (any 1-D)", "m2=1 v1=6.0 v2=0 v2f=3.0 e=1 | m1=0.3333 v1f=-3");             /* 8.51 */
     check("Center of mass", "m1=1.99E30 m2=1.90E27 x2=7.78E11 | xcm=7.421E8");              /* 8.52 */
     check("Center of mass", "m1=1.3312E10 m2=1.9531E9 x2=19700 | xcm=2520.5");              /* 8.53, m = d^3 */
+    /* Samuel's problems, typed the quick way */
+    check("Collision (any 1-D)", "m1=0.245 m2=0.360 v2=0 v1f=-0.118 v2f=0.660 | v1=0.8518 dK=-0.00877 e=0.9134"); /* pucks */
+    check("Collision (any 1-D)", "m1=1800 v1=1.60 m2=1450 v2=-1.10 v1f=0.270 | v2f=0.5510 dK=-2895.5 e=0.1041"); /* bumpers */
+    tp = &topics[find_topic("Collision (any 1-D)")]; memset(txt, 0, sizeof txt);
+    strcpy(txt[C_M1], "2"); strcpy(txt[C_V1], "3"); strcpy(txt[C_M2], "1"); strcpy(txt[C_V2], "0"); solve();
+    if (easiest_missing(C_V1F) != B(C_E)) { fails++; printf("HINT: before-only collision should ask for e\n"); }
+    check("C.o.m. same density", "d1=2370 d2=1250 D=19700 | xcm=2520.5 h1=1335.5 x2=17179.5 m1/m2=6.816"); /* 8.53 */
+    check("C.o.m. same density", "r1=1185 r2=625 D=19700 | xcm=2520.5 d1=2370");             /* radii instead */
+    check("C.o.m. same density", "d1=2370 D=19700 xcm=2520.5 | d2=1250");                    /* backward */
+    check("C.o.m. 3 objects (x,y)", "m1=0.300 x1=0.200 y1=0.300 m2=0.400 x2=0.100 y2=-0.400 m3=0.200 x3=-0.300 y3=0.600 | xcm=0.04444 ycm=0.05556 M=0.9"); /* 3 chocolate blocks */
+    check("C.o.m. 3 objects (x,y)", "m1=2 m2=3 x2=4 | xcm=2.4 ycm=0 M=5");                   /* only 2, on a line */
+    check("C.o.m. 3 objects (x,y)", "m1=1 m2=1 x2=2 m3=2 xcm=0 ycm=0 | x3=-1 y3=0");          /* where must m3 go */
     check("Center of mass", "m1=1200 m2=1800 x2=40.0 v1=12.0 v2=20.0 | xcm=24 vcm=16.8 P=50400"); /* 8.54 */
     check("Center of mass", "m1=0.500 x1=0.150 m2=0.800 x2=0.700 | xcm=0.4885");            /* 8.55 */
     check("Center of mass", "x1=0 m2=0.10 x2=8.0 xcm=2.0 v2=0 vcm=5.0 | m1=0.3 P=2 v1=6.667"); /* 8.56 */
@@ -2759,10 +3114,10 @@ int main(int argc, char **argv) {
     check("Impulse", "m=0.0360 h_drop=2.07 h_up=1.54 t=2.50E-3 | J=0.4271 F=170.8");        /* 8.64 */
     check("Impulse", "m=0.05714 v1=20.0 F=-380 t=3.00E-3 | J=-1.14 v2=0.049");              /* 8.65 x */
     check("Impulse", "m=0.05714 v1=-4.0 F=110 t=3.00E-3 | J=0.33 v2=1.775");                /* 8.65 y */
-    check("Collision: stick together", "m1=2.00 v1=2.00 m2=10.00 v2=-0.500 | vf=-0.08333 dK=-5.208"); /* 8.67a */
-    check("Collision: elastic", "m1=2.00 v1=2.00 m2=10.00 v2=-0.500 | v1f=-2.167 v2f=0.3333"); /* 8.67b */
-    check("Recoil / any collision", "m1=130 v1=4.70 m2=20.0 v2=4.70 v2f=0 | v1f=5.423");    /* 8.68b */
-    check("Collision: stick together", "m1=150 v1=4.70 m2=20.0 v2=-6.30 | vf=3.406");       /* 8.68c */
+    check("Collision (any 1-D)", "m1=2.00 v1=2.00 m2=10.00 v2=-0.500 e=0 | v1f=-0.08333 v2f=-0.08333 dK=-5.208"); /* 8.67a */
+    check("Collision (any 1-D)", "m1=2.00 v1=2.00 m2=10.00 v2=-0.500 e=1 | v1f=-2.167 v2f=0.3333"); /* 8.67b */
+    check("Collision (any 1-D)", "m1=130 v1=4.70 m2=20.0 v2=4.70 v2f=0 | v1f=5.423");    /* 8.68b */
+    check("Collision (any 1-D)", "m1=150 v1=4.70 m2=20.0 v2=-6.30 e=0 | v1f=3.406 v2f=3.406");       /* 8.68c */
     check("Impulse", "m=3.00 v1=0 J=25 | v2=8.333");                                        /* 8.70: J = area */
     check("Stick, then what happens", "m1=0.500 v1=24.0 m2=8.00 Ht=2.20 | vf=1.4118 xr=0.9460"); /* 8.71 */
     check("Stick, then what happens", "m1=5.00 v1=12.0 m2=5.00 | vf=6 h=1.8367");           /* 8.73 */
@@ -2787,6 +3142,7 @@ int main(int argc, char **argv) {
         check("Energy conservation", "m=2 v1=3 h1=0 v2=0 h2=0 x2=0.1 |");
         build_steps(E_K); printf("%s\n", text);
     }
+    wiz_tests();
     printf(fails ? "\n%d FAILURES\n" : "\nALL TESTS PASSED\n", fails);
     return fails != 0;
 }
@@ -2838,7 +3194,7 @@ static bool night = false;
 static void apply_theme(void) { gfx_SetPalette(night ? pal_night : pal_paper, sizeof pal_paper, 0); }
 
 /* ---------- app state ---------------------------------------------- */
-enum { ST_HOME, ST_TOPICS, ST_FORM, ST_READ, ST_WAIT, ST_COMPOSE };
+enum { ST_HOME, ST_TOPICS, ST_FORM, ST_READ, ST_WAIT, ST_COMPOSE, ST_WIZ };
 static uint8_t state = ST_HOME, read_back = ST_FORM;
 static bool dirty = true;
 static const char *notice = NULL;
@@ -2848,6 +3204,9 @@ static bool read_is_ai = false;
 static uint8_t home_sel, topic_sel, cur_cat, cur_topic, row, row_top;
 static bool pending;            /* typed something; re-solve once the keys go quiet */
 static uint32_t solve_at;
+#if HAVE_WIZ
+static const wplan_t *wiz_done;     /* walk-through finished: show its answer */
+#endif
 
 static uint16_t line_start[MAX_LINES];
 static uint8_t line_len[MAX_LINES];
@@ -2948,8 +3307,12 @@ static void draw_frame(const char *title, const char *const soft[5]) {
     gfx_PrintStringXY(title, TEXT_X, 5);
 #if USE_CLAUDE
     print_right(!srl_open ? "offline" : bridge_ready ? "AI ready" : "no bridge", SCREEN_W - TEXT_X, 5);
+#elif PART == 2
+    print_right("PHL2", SCREEN_W - TEXT_X, 5);
+#elif PART == 3
+    print_right("PHL3", SCREEN_W - TEXT_X, 5);
 #else
-    print_right("PHYS1", SCREEN_W - TEXT_X, 5);
+    print_right("PHL1", SCREEN_W - TEXT_X, 5);
 #endif
     gfx_SetColor(C_BAR);
     gfx_FillRectangle_NoClip(0, SOFT_Y - 4, SCREEN_W, 240 - SOFT_Y + 4);
@@ -3001,17 +3364,28 @@ static void draw_list(const char *title, const char *heading, const char *const 
 #endif
 
 static void draw_home(void) {
-#if USE_CLAUDE
-    static const char *const soft[5] = { "Formula", "Ask AI", "", "Theme", "Quit" };
+#if HAVE_WIZ
+#define HELP_SOFT "Help"
 #else
-    static const char *const soft[5] = { "Formula", "", "", "Theme", "Quit" };
+#define HELP_SOFT ""
+#endif
+#if USE_CLAUDE
+    static const char *const soft[5] = { "Formula", "Ask AI", HELP_SOFT, "Theme", "Quit" };
+#else
+    static const char *const soft[5] = { "Formula", "", HELP_SOFT, "Theme", "Quit" };
 #endif
     const char *items[NUM_CATS];
     for (uint8_t i = 0; i < NUM_CATS; i++) items[i] = cats[i].name;
     draw_list(APP_TITLE, "What is the problem about?", items, NUM_CATS, home_sel, soft);
+#if HAVE_WIZ
+    gfx_SetTextFGColor(C_ACCENT);
+    gfx_PrintStringXY("Not sure? ZOOM = Help me pick", TEXT_X, HELP_Y + 2);
+    gfx_SetTextFGColor(C_DIM);
+    gfx_PrintStringXY("(it asks you a few questions)", TEXT_X, HELP_Y + 13);
+#endif
 }
 static void draw_topics(void) {
-    static const char *const soft[5] = { "Back", "", "", "", "" };
+    static const char *const soft[5] = { "Back", "", HELP_SOFT, "", "" };
     const char *items[10];
     const cat_t *c = &cats[cur_cat];
     for (uint8_t i = 0; i < c->count; i++) items[i] = topics[cat_first(cur_cat) + i].name;
@@ -3075,7 +3449,39 @@ static void draw_form(void) {
         gfx_SetTextFGColor(C_WARN);
         gfx_PrintStringXY("Numbers disagree. Check:", TEXT_X, HELP_Y + 2);
         print_n(tp->rules[conflict].eq, (uint8_t)strlen(tp->rules[conflict].eq), TEXT_X, HELP_Y + 13);
-    } else {
+    }
+#if HAVE_WIZ
+    else if (guide && gstep < guide->nsteps) {
+        /* walk-through: what to type in this box, and what words to look for */
+        const wstep_t *S = &guide->steps[gstep];
+        char cnt[4] = { (char)('1' + gstep), '/', (char)('0' + guide->nsteps), 0 };
+        gfx_SetTextFGColor(C_ACCENT);
+        gfx_PrintStringXY(S->ask, TEXT_X, HELP_Y + 2);
+        gfx_SetTextFGColor(C_DIM);
+        print_right(cnt, SCREEN_W - TEXT_X, HELP_Y + 2);
+        gfx_PrintStringXY(S->look, TEXT_X, HELP_Y + 13);
+    } else if (wiz_done && !pending) {
+        uint8_t a = wiz_answer(wiz_done);
+        if (st[a] == S_SOLVED) {
+            char ans[COLS + 8] = "ANSWER  ";
+            strcat(ans, tp->vars[a].sym);
+            strcat(ans, " = ");
+            fmt_num(val[a], b);
+            strcat(ans, b);
+            if (tp->vars[a].unit[0] && tp->vars[a].unit[0] != '(') { strcat(ans, " "); strcat(ans, tp->vars[a].unit); }
+            gfx_SetTextFGColor(C_SOLVED);
+            print_n(ans, (uint8_t)strlen(ans), TEXT_X, HELP_Y + 2);
+            gfx_SetTextFGColor(C_DIM);
+            gfx_PrintStringXY(wiz_done->done, TEXT_X, HELP_Y + 13);
+        } else {
+            gfx_SetTextFGColor(C_WARN);
+            gfx_PrintStringXY("Not enough numbers to solve it yet.", TEXT_X, HELP_Y + 2);
+            gfx_SetTextFGColor(C_DIM);
+            gfx_PrintStringXY("UP: go back a box   ZOOM: tips", TEXT_X, HELP_Y + 13);
+        }
+    }
+#endif
+    else {
         gfx_SetTextFGColor(C_TEXT);
         gfx_PrintStringXY(tp->vars[row].desc, TEXT_X, HELP_Y + 2);
         /* second line: what this value still needs, or a remark about the result */
@@ -3335,7 +3741,87 @@ static void draw_wait(uint8_t dots) {
 /* Screens: key handling                                               */
 /* ================================================================== */
 
+#if HAVE_WIZ
+static uint8_t wq, wsel, wdepth, wstack[8];
+static void show_row(void) {
+    if (row < row_top) row_top = row;
+    if (row >= row_top + ROWS) row_top = (uint8_t)(row - ROWS + 1);
+}
+static void wiz_open(void) { wq = 0; wsel = 0; wdepth = 0; state = ST_WIZ; dirty = true; }
+static void wiz_finish(void) {
+    wiz_done = guide;
+    guide = NULL;
+    row = wiz_answer(wiz_done);
+    show_row();
+    dirty = true;
+}
+static void wiz_go_plan(const wplan_t *p) {
+    int t = wiz_topic(p);
+    if (t < 0 || !wiz_begin(p)) return;
+    cur_topic = (uint8_t)t;
+    for (uint8_t c = 0; c < NUM_CATS; c++) {        /* so Back lands in the right list */
+        uint8_t f = cat_first(c);
+        if (t >= f && t < f + cats[c].count) { cur_cat = home_sel = c; topic_sel = (uint8_t)(t - f); }
+    }
+    pending = false;
+    wiz_done = NULL;
+    row_top = 0;
+    state = ST_FORM;
+    if (gstep >= guide->nsteps) wiz_finish();
+    else { row = guide->steps[gstep].var; show_row(); }
+    dirty = true;
+}
+static void draw_wiz(void) {
+    static const char *const soft[5] = { "Back", "", "", "", "" };
+    const wq_t *q = &wqs[wq];
+    draw_frame("Help me pick", soft);
+    gfx_SetTextFGColor(C_TEXT);
+    gfx_PrintStringXY(q->q, TEXT_X, BODY_Y + 8);
+    gfx_SetTextFGColor(C_DIM);
+    gfx_PrintStringXY(q->hint, TEXT_X, BODY_Y + 22);
+    for (uint8_t i = 0; i < q->nopt; i++) {
+        int y = BODY_Y + 52 + i * 26;
+        char num[2] = { (char)('1' + i), 0 };
+        if (i == wsel) {
+            gfx_SetColor(C_ACCENT);
+            gfx_FillRectangle_NoClip(TEXT_X - 2, (uint8_t)(y - 7), SCREEN_W - 2 * TEXT_X + 4, 20);
+            gfx_SetTextFGColor(C_ONACC);
+        } else gfx_SetTextFGColor(C_DIM);
+        gfx_PrintStringXY(num, TEXT_X + 6, y);
+        if (i != wsel) gfx_SetTextFGColor(C_TEXT);
+        gfx_PrintStringXY(q->opt[i].label, TEXT_X + 28, y);
+    }
+    gfx_SetTextFGColor(C_DIM);
+    gfx_PrintStringXY("press the number, or arrows + ENTER", TEXT_X, HELP_Y + 2);
+    if (wdepth) gfx_PrintStringXY("CLEAR: back one question", TEXT_X, HELP_Y + 13);
+}
+static void wiz_keys(void) {
+    const wq_t *q = &wqs[wq];
+    int8_t d = digit_pressed(), pick = -1, go;
+    if (pressed_repeat(kb_KeyDown)) { wsel = (uint8_t)((wsel + 1) % q->nopt); dirty = true; }
+    else if (pressed_repeat(kb_KeyUp)) { wsel = (uint8_t)((wsel + q->nopt - 1) % q->nopt); dirty = true; }
+    else if (PRESSED(kb_KeyEnter) || PRESSED(kb_KeyRight)) pick = (int8_t)wsel;
+    else if (d >= 1 && d <= (int8_t)q->nopt) pick = (int8_t)(d - 1);
+    else if (PRESSED(kb_KeyClear) || PRESSED(kb_KeyLeft) || PRESSED(kb_KeyYequ)) {
+        if (wdepth) { wq = wstack[--wdepth]; wsel = 0; } else state = ST_HOME;
+        dirty = true;
+    }
+    if (pick < 0) return;
+    go = q->opt[pick].go;
+    if (go >= 0) {
+        if (wdepth < sizeof wstack) wstack[wdepth++] = wq;
+        wq = (uint8_t)go;
+        wsel = 0;
+        dirty = true;
+    } else wiz_go_plan(&wplans[-1 - go]);
+}
+#endif
+
 static void open_topic(uint8_t t) {
+#if HAVE_WIZ
+    guide = NULL;
+    wiz_done = NULL;
+#endif
     cur_topic = t;
     tp = &topics[t];
     memset(txt, 0, sizeof txt);
@@ -3345,7 +3831,12 @@ static void open_topic(uint8_t t) {
     state = ST_FORM;
     dirty = true;
 }
-static void edited(void) { pending = true; solve_at = now_ms() + 250; dirty = true; }
+static void edited(void) {
+    pending = true; solve_at = now_ms() + 250; dirty = true;
+#if HAVE_WIZ
+    wiz_done = NULL;
+#endif
+}
 static void settle(void) { if (pending) { solve(); pending = false; dirty = true; } }
 
 static void show_steps(void) {
@@ -3359,7 +3850,7 @@ static void show_tips(void) {
     tput(tp->tips);
     tput("\n\nFORMULAS USED HERE\n");
     put_formulas(tp);
-    tput("\nKEYS\n(-) negative   ^ types E (3E8)\nCLEAR empties a value\nENTER on a solved value = steps\n");
+    tput("\nKEYS\n(-) or LEFT: negative  RIGHT: positive\n^ types E (3E8)   CLEAR empties a value\nENTER on a solved value = steps\n");
     open_reader("Tips", ST_FORM, false);
 }
 
@@ -3368,6 +3859,25 @@ static void form_keys(void) {
     char c = 0;
     uint8_t n = (uint8_t)strlen(txt[row]);
 
+#if HAVE_WIZ
+    if (guide) {
+        /* walk-through: ENTER or DOWN = this box is done (blank is fine), UP = back one */
+        if (PRESSED(kb_KeyEnter) || pressed_repeat(kb_KeyDown)) {
+            settle();
+            if (wiz_next()) wiz_finish();
+            else { row = guide->steps[gstep].var; show_row(); dirty = true; }
+            return;
+        }
+        if (pressed_repeat(kb_KeyUp)) {
+            if (gstep) { gstep--; row = guide->steps[gstep].var; show_row(); dirty = true; }
+            return;
+        }
+        /* any menu key ends the walk-through and then does its usual job */
+        if (PRESSED(kb_KeyYequ) || PRESSED(kb_KeyWindow) || (PRESSED(kb_KeyClear) && !n)) { guide = NULL; dirty = true; }
+    }
+    if (wiz_done && (PRESSED(kb_KeyUp) || PRESSED(kb_KeyDown) || PRESSED(kb_KeyYequ) || PRESSED(kb_KeyWindow) || PRESSED(kb_KeyClear)))
+        { wiz_done = NULL; dirty = true; }
+#endif
     if (pressed_repeat(kb_KeyDown)) { row = (uint8_t)((row + 1) % tp->nvars); dirty = true; }
     else if (pressed_repeat(kb_KeyUp)) { row = (uint8_t)((row + tp->nvars - 1) % tp->nvars); dirty = true; }
     else if (PRESSED(kb_KeyEnter)) {
@@ -3389,6 +3899,18 @@ static void form_keys(void) {
     }
     else if (pressed_repeat(kb_KeyDel)) {
         if (n) { txt[row][n - 1] = 0; edited(); }
+    }
+    /* LEFT makes the value negative, RIGHT positive, any time while typing:
+       read "0.118 m/s to the left", type .118, press LEFT */
+    else if (PRESSED(kb_KeyLeft)) {
+        if (txt[row][0] != '-' && n < VAL_LEN) {
+            memmove(txt[row] + 1, txt[row], (size_t)n + 1);
+            txt[row][0] = '-';
+            edited();
+        }
+    }
+    else if (PRESSED(kb_KeyRight)) {
+        if (txt[row][0] == '-') { memmove(txt[row], txt[row] + 1, n); edited(); }
     }
     else {
         if ((d = digit_pressed()) >= 0) c = (char)('0' + d);
@@ -3421,6 +3943,9 @@ static bool home_keys(void) {       /* true = quit */
     if (PRESSED(kb_KeyWindow)) { read_back = ST_HOME; state = ST_COMPOSE; dirty = true; return false; }
 #endif
     if (PRESSED(kb_KeyClear) || PRESSED(kb_KeyGraph)) return true;
+#if HAVE_WIZ
+    if (PRESSED(kb_KeyZoom)) { wiz_open(); return false; }
+#endif
     if (pick < 0) return false;
     home_sel = cur_cat = (uint8_t)pick;
     topic_sel = 0;
@@ -3436,6 +3961,9 @@ static void topics_keys(void) {
     else if (PRESSED(kb_KeyEnter) || PRESSED(kb_KeyRight)) open_topic((uint8_t)(cat_first(cur_cat) + topic_sel));
     else if (PRESSED(kb_KeyClear) || PRESSED(kb_KeyYequ) || PRESSED(kb_KeyLeft)) { state = ST_HOME; dirty = true; }
     else if (d >= 1 && d <= (int8_t)c->count) { topic_sel = (uint8_t)(d - 1); open_topic((uint8_t)(cat_first(cur_cat) + topic_sel)); }
+#if HAVE_WIZ
+    else if (PRESSED(kb_KeyZoom)) wiz_open();
+#endif
 }
 static void read_keys(void) {
     uint16_t ms = max_scroll();
@@ -3493,6 +4021,9 @@ int main(void) {
             if (state == ST_FORM && pending && (int32_t)(now_ms() - solve_at) >= 0) settle();
             break;
         case ST_READ:   read_keys(); break;
+#if HAVE_WIZ
+        case ST_WIZ:    wiz_keys(); break;
+#endif
 #if USE_CLAUDE
         case ST_WAIT:
             if (PRESSED(kb_KeyClear) || PRESSED(kb_KeyYequ)) {
@@ -3532,6 +4063,9 @@ int main(void) {
             case ST_TOPICS: draw_topics(); break;
             case ST_FORM:   draw_form(); break;
             case ST_READ:   draw_read(); break;
+#if HAVE_WIZ
+            case ST_WIZ:    draw_wiz(); break;
+#endif
 #if USE_CLAUDE
             case ST_WAIT:   draw_wait(dots); break;
             case ST_COMPOSE: draw_compose(); break;

@@ -34,6 +34,12 @@ jobs:
           done
           ls -l out
 
+      - name: Build CHEM (Chemistry 1 solver, offline)
+        run: |
+          make -C chem
+          cp chem/bin/CHEM.8xp out/
+          ls -l out
+
       - name: Get the CE libraries (clibs.8xg)
         continue-on-error: true
         run: curl -fsSL -o out/clibs.8xg https://github.com/CE-Programming/libraries/releases/latest/download/clibs.8xg
