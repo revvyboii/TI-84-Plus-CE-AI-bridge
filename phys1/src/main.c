@@ -3206,7 +3206,7 @@ int main(int argc, char **argv) {
     check("Force graph (area)", "F0=0 F1=5 t1=4 F2=0 t2=6 m=3 | v2=8.333");                 /* 8.70 */
     check("Force graph (area)", "F0=0 F1=2500 t1=0.001 m=2 v1=6 | J=1.25 v2=6.625");
     check("Stick, then what happens", "m1=0.015552 v1=259.38 m2=2.00 mu_k=0.38 xf=0.25 | k=69.13"); /* 8.101b */
-    check("Stick, then what happens", "m1=0.00810 v1=288.04 m2=2.00 mu_k=0.38 k=69.1 | xf=0.118"); /* 8.101c: bullet B */
+    check("Stick, then what happens", "m1=0.00810 v1=288.04 m2=2.00 mu_k=0.38 k=69.1 | xf=0.1175"); /* 8.101c: bullet B */
     /* checked against the worked solutions */
     check("3 objects at once", "m1=5 v1=11 a1=270 m2=10 v2=3 a2=180 m3=0 v3=0 | Px=-30 Py=-55");          /* 8.3a */
     check("3 objects at once", "m1=5 v1=11 a1=270 m2=6 v2=10 a2=60 m3=10 v3=3 a3=180 | Px=0 Py=-3.038");  /* 8.3c */
