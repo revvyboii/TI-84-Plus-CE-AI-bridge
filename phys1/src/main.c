@@ -3206,7 +3206,16 @@ int main(int argc, char **argv) {
     check("Force graph (area)", "F0=0 F1=5 t1=4 F2=0 t2=6 m=3 | v2=8.333");                 /* 8.70 */
     check("Force graph (area)", "F0=0 F1=2500 t1=0.001 m=2 v1=6 | J=1.25 v2=6.625");
     check("Stick, then what happens", "m1=0.015552 v1=259.38 m2=2.00 mu_k=0.38 xf=0.25 | k=69.13"); /* 8.101b */
-    check("Stick, then what happens", "m1=0.005184 v1=508.10 m2=2.00 mu_k=0.38 k=69.13 | xf=0.1404"); /* 8.101c */
+    check("Stick, then what happens", "m1=0.00810 v1=288.04 m2=2.00 mu_k=0.38 k=69.1 | xf=0.118"); /* 8.101c: bullet B */
+    /* checked against the worked solutions */
+    check("3 objects at once", "m1=5 v1=11 a1=270 m2=10 v2=3 a2=180 m3=0 v3=0 | Px=-30 Py=-55");          /* 8.3a */
+    check("3 objects at once", "m1=5 v1=11 a1=270 m2=6 v2=10 a2=60 m3=10 v3=3 a3=180 | Px=0 Py=-3.038");  /* 8.3c */
+    check("Force graph (area)", "F0=7500 F1=7500 t1=1.5 F2=3500 t2=1.5 F3=3500 t3=1.5 m=1394 | J=24750 v2=17.755"); /* 8.100 */
+    check("Swing: speed + tension", "L=2.8 h=5.6 v=5.238 | v0=11.71");                       /* 8.84: over the top */
+    check("Collision: elastic", "m1=1 v1=6 v2=0 v2f=3 | m2=3 v1f=-3");                       /* 8.51 */
+    check("Collision: elastic", "m1=1 v1=1.5E7 v2=0 v1f=-1.2E7 | m2=9 v2f=3E6");             /* 8.50 */
+    check("Stick together in 2-D", "m1=2000 a1=0 m2=1500 v2=15 a2=270 af=-65 | vf=7.093 v1=5.246"); /* 8.38 */
+    check("Stick, then what happens", "m1=1 v1=4.4272 m2=1 | h=0.25");                       /* 8.82 with R = 1 */
     /* Chapter 8 exercises (numbers only) */
     check("Projectile", "th=0 y=-1.2 x=2 | v0=4.0415");                                     /* 8.89 */
     check("Projectile", "th=30 y=-5 x=20 | v0=12.567");                                      /* lands below, at an angle */
