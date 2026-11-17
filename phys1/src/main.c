@@ -201,6 +201,11 @@ static const var_t proj_vars[] = {
     {"H",   "m",   "H: max height above launch", UNK},
     {"R",   "m",   "R: range, ONLY if lands at launch ht", UNK},
 };
+/* launch speed from where it lands: y = x tan(th) - g x^2 / (2 v0^2 cos^2 th) */
+static double p_v0xy(const double *v) {
+    double c = cos(v[P_TH] * DEG), q = v[P_X] * tan(v[P_TH] * DEG) - v[P_Y];
+    return c < 1e-6 || q <= 0 ? UNK : fabs(v[P_X]) / c * sqrt(GRAV / (2 * q));
+}
 static const rule_t proj_rules[] = {
     {P_V0X, B(P_V0)|B(P_TH), p_v0x, "v0x = v0 cos(th)", 0},
     {P_V0Y, B(P_V0)|B(P_TH), p_v0y, "v0y = v0 sin(th)", 0},
@@ -230,6 +235,7 @@ static const rule_t proj_rules[] = {
     {P_V0Y, B(P_H), p_v0yh, "H = v0y^2 / (2 g)", R_ABS},
     {P_R,   B(P_V0)|B(P_TH), p_r, "R = v0^2 sin(2 th) / g", 0},
     {P_V0,  B(P_R)|B(P_TH), p_v0r, "R = v0^2 sin(2 th) / g", 0},
+    {P_V0,  B(P_TH)|B(P_X)|B(P_Y), p_v0xy, "y = x tan(th) - g x^2/(2 v0^2 cos^2 th)", 0},
 };
 
 /* ---------- 3. circular motion ------------------------------------- */
@@ -843,6 +849,9 @@ FN(x_v2b, sqrt(SQ(X2X) + SQ(X2Y)) / v[X_M2])
 FN(x_a2b, atan2(X2Y, X2X) / DEG)
 FN(x_v1b, sqrt(SQ(X1X) + SQ(X1Y)) / v[X_M1])
 FN(x_a1b, atan2(X1Y, X1X) / DEG)
+#define XD sin((v[X_A2] - v[X_A1]) * DEG)
+FN(x_v1c, fabs(XD) < 2e-3 ? UNK : (v[X_M1] + v[X_M2]) * v[X_VF] * sin((v[X_A2] - v[X_AF]) * DEG) / (v[X_M1] * XD))
+FN(x_v2c, fabs(XD) < 2e-3 ? UNK : (v[X_M1] + v[X_M2]) * v[X_VF] * sin((v[X_AF] - v[X_A1]) * DEG) / (v[X_M2] * XD))
 FN(x_m1,  -v[X_M2] * v[X_V2] * XS2 / (v[X_V1] * XS1))
 FN(x_m2,  -v[X_M1] * v[X_V1] * XS1 / (v[X_V2] * XS2))
 FN(x_dk,  0.5 * (v[X_M1] + v[X_M2]) * SQ(v[X_VF]) - 0.5 * v[X_M1] * SQ(v[X_V1]) - 0.5 * v[X_M2] * SQ(v[X_V2]))
@@ -871,6 +880,9 @@ static const rule_t stk2_rules[] = {
     {X_A1, X_AFT|B(X_V2)|B(X_A2), x_a1b, "tan(a1) = p1y / p1x", R_NOCHK},
     {X_V1, (X_BEF & ~B(X_V1))|B(X_AF), x_v1, "no momentum sideways to af", 0},
     {X_V2, (X_BEF & ~B(X_V2))|B(X_AF), x_v2, "no momentum sideways to af", 0},
+#define X_BOTH (B(X_M1)|B(X_A1)|B(X_M2)|B(X_A2)|B(X_VF)|B(X_AF))
+    {X_V1, X_BOTH, x_v1c, "p before = p after (x and y parts)", 0},
+    {X_V2, X_BOTH, x_v2c, "p before = p after (x and y parts)", 0},
 };
 
 /* ---------- spring pushing two blocks apart ------------------------ */
@@ -2025,7 +2037,7 @@ static const topic_t topics[] = {
     TOPIC("Stick together in 2-D", stk2_vars, stk2_rules,
         "Angles: east 0, north 90,\nwest 180, south 270 (or -90)\n"
         "60 south of east: -60\ntackle, enmeshed, move as one,\nlocked together: use this one\n"
-        "Know the angle after but not one\nspeed before: type af, leave that\nspeed blank."),
+        "Know the angle after but not one\nspeed before: type af, leave that\nspeed blank. Know vf and af: leave\nboth speeds blank."),
     /* Changing force (calc) */
     TOPIC("Force F = A t^n", pow_vars, pow_rules,
         "F = 3.00 t:  A = 3, n = 1\nF = A t^2: n = 2; type F2 and t2\n  to get A\n"
@@ -2875,6 +2887,9 @@ int main(int argc, char **argv) {
     check("Vector components", "Ax=3 Ay=4 | A=5 th=53.13");
 
     /* Chapter 8 exercises (numbers only) */
+    check("Projectile", "th=0 y=-1.2 x=2 | v0=4.0415");                                     /* 8.89 */
+    check("Projectile", "th=30 y=-5 x=20 | v0=12.567");                                      /* lands below, at an angle */
+    check("Stick together in 2-D", "m1=950 a1=0 m2=1900 a2=90 vf=16 af=66 | v1=19.53 v2=21.93"); /* 8.41 */
     check("Impulse", "m=0.0450 v1=0 v2=24.9 t=2.40E-3 | F=466.9");                          /* 8.7 */
     check("Impulse", "m=0.143 v1=-40.5 v2=54.5 t=1.50E-3 | J=13.585 F=9057");               /* 8.8 */
     check("Impulse", "m=0.160 v1=3.00 F=25.0 t=0.050 | v2=10.81");                          /* 8.9a */
